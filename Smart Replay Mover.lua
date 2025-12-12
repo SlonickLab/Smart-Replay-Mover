@@ -325,8 +325,10 @@ ffi.cdef[[
     BOOL CloseHandle(HANDLE hObject);
     DWORD GetModuleBaseNameA(HANDLE hProcess, void* hModule, char* lpBaseName, DWORD nSize);
     int GetWindowTextA(HWND hWnd, char* lpString, int nMaxCount);
+    int GetWindowTextW(HWND hWnd, wchar_t* lpString, int nMaxCount);
 
     int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags, LPCSTR lpMultiByteStr, int cbMultiByte, LPCWSTR lpWideCharStr, int cchWideChar);
+    int WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags, const wchar_t* lpWideCharStr, int cchWideChar, char* lpMultiByteStr, int cbMultiByte, const char* lpDefaultChar, int* lpUsedDefaultChar);
     BOOL DeleteFileW(LPCWSTR lpFileName);
 
     typedef struct {
@@ -488,16 +490,35 @@ local function get_active_process()
     return ok and result or nil
 end
 
+-- Helper to convert UTF-16 (wide string) to UTF-8
+local function wide_to_utf8(wide_buffer, wide_len)
+    if wide_len <= 0 then return nil end
+
+    -- First call: get required buffer size
+    local size_needed = kernel32.WideCharToMultiByte(CP_UTF8, 0, wide_buffer, wide_len, nil, 0, nil, nil)
+    if size_needed <= 0 then return nil end
+
+    -- Second call: perform conversion
+    local utf8_buffer = ffi.new("char[?]", size_needed + 1)
+    local result = kernel32.WideCharToMultiByte(CP_UTF8, 0, wide_buffer, wide_len, utf8_buffer, size_needed, nil, nil)
+
+    if result > 0 then
+        return ffi.string(utf8_buffer, result)
+    end
+    return nil
+end
+
 local function get_window_title()
     local ok, result = pcall(function()
         local hwnd = user32.GetForegroundWindow()
         if not hwnd then return nil end
 
-        local buffer = ffi.new("char[256]")
-        local len = user32.GetWindowTextA(hwnd, buffer, 256)
+        -- Use wide (Unicode) version for proper international character support
+        local wide_buffer = ffi.new("wchar_t[256]")
+        local len = user32.GetWindowTextW(hwnd, wide_buffer, 256)
 
         if len > 0 then
-            return ffi.string(buffer)
+            return wide_to_utf8(wide_buffer, len)
         end
         return nil
     end)
