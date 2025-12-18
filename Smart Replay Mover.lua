@@ -1,5 +1,5 @@
 -- ============================================================================
--- Smart Replay Mover v2.3
+-- Smart Replay Mover v2.4.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
 --
@@ -40,6 +40,7 @@ local ffi = require("ffi")
 local CONFIG = {
     add_game_prefix = true,
     organize_screenshots = true,
+    organize_recordings = true,  -- NEW: Support for regular recordings
     use_date_subfolders = false,
     fallback_folder = "Desktop",
     duplicate_cooldown = 5.0,
@@ -299,9 +300,18 @@ end
 -- ============================================================================
 
 local last_save_time = 0
+local last_recording_time = 0  -- Separate cooldown for recordings
 local files_moved = 0
 local files_skipped = 0
 local script_settings = nil  -- Store reference to settings for button callbacks
+
+-- Recording signal handler state
+local recording_signal_handler = nil
+local recording_output_ref = nil
+
+-- Store game name detected at recording start (for file splitting)
+local recording_game_name = nil
+local recording_folder_name = nil
 
 -- Temporary storage for new custom name input
 local new_process_name = ""
@@ -778,6 +788,12 @@ local function get_replay_path()
     return path
 end
 
+-- Get the last recording file path
+local function get_recording_path()
+    local path = obs.obs_frontend_get_last_recording()
+    return path
+end
+
 local function process_file(path)
     if not path or path == "" then
         log("ERROR: No file path provided")
@@ -797,6 +813,156 @@ local function process_file(path)
     -- Move file (pass folder_name as game_name for prefix)
     move_file(path, folder_name, folder_name)
 end
+
+-- Process file with pre-detected game info (for file splitting during recording)
+local function process_file_with_game(path, folder_name, game_name)
+    if not path or path == "" then
+        log("ERROR: No file path provided")
+        return
+    end
+
+    if not folder_name then
+        -- Fallback to current detection if no cached game info
+        process_file(path)
+        return
+    end
+
+    log("Using cached game: " .. folder_name)
+    move_file(path, folder_name, game_name or folder_name)
+end
+
+-- ============================================================================
+-- RECORDING SIGNAL HANDLERS (for file splitting support)
+-- ============================================================================
+
+-- Callback for "file_changed" signal (file splitting)
+local function on_recording_file_changed(calldata)
+    if not CONFIG.organize_recordings then
+        return
+    end
+
+    -- Get the previous (completed) file path from signal
+    local prev_file = obs.calldata_string(calldata, "next_file")
+    -- Note: OBS sends the "next_file" parameter, but we want to move the OLD file
+    -- The old file path is not directly provided, so we use last_recording
+
+    -- Actually, we need to get the file that just finished
+    -- In file splitting, the signal fires AFTER the split happens
+    -- The "next_file" is the NEW file being written to
+
+    debug("File split signal received, next_file: " .. tostring(prev_file))
+
+    -- We need to track the previous file ourselves
+    -- For now, we'll use a small delay and check for the file
+    -- This is handled by storing the current recording path when recording starts
+
+    -- Use the cached game name from when recording started
+    if recording_folder_name then
+        -- Get the recording output to find the previous file
+        local recording = obs.obs_frontend_get_recording_output()
+        if recording then
+            -- The "next_file" is the new file, we need the previous segment
+            -- OBS doesn't directly provide the old file in the signal
+            -- We'll rely on OBS_FRONTEND_EVENT_RECORDING_STOPPED for final file
+            -- and handle splits via a timer-based approach
+            obs.obs_output_release(recording)
+        end
+
+        log("File split detected - using cached game: " .. recording_folder_name)
+    end
+end
+
+-- Connect to recording output signals
+local function connect_recording_signals()
+    -- Disconnect any existing handler first
+    disconnect_recording_signals()
+
+    local recording = obs.obs_frontend_get_recording_output()
+    if not recording then
+        debug("No recording output available to connect signals")
+        return false
+    end
+
+    local sh = obs.obs_output_get_signal_handler(recording)
+    if not sh then
+        debug("Could not get signal handler from recording output")
+        obs.obs_output_release(recording)
+        return false
+    end
+
+    -- Connect to file_changed signal for file splitting
+    obs.signal_handler_connect(sh, "file_changed", on_recording_file_changed)
+
+    -- Store reference to release later
+    recording_output_ref = recording
+    recording_signal_handler = sh
+
+    debug("Connected to recording file_changed signal")
+    return true
+end
+
+-- Disconnect recording signals
+local function disconnect_recording_signals()
+    if recording_signal_handler then
+        obs.signal_handler_disconnect(recording_signal_handler, "file_changed", on_recording_file_changed)
+        recording_signal_handler = nil
+    end
+
+    if recording_output_ref then
+        obs.obs_output_release(recording_output_ref)
+        recording_output_ref = nil
+    end
+
+    debug("Disconnected recording signals")
+end
+
+-- ============================================================================
+-- SPLIT FILE TRACKING
+-- ============================================================================
+
+-- Table to track split files during recording
+local split_files = {}
+local current_recording_file = nil
+
+-- Timer callback to check for new split files
+local function check_split_files()
+    if not CONFIG.organize_recordings then
+        return
+    end
+
+    local recording = obs.obs_frontend_get_recording_output()
+    if not recording then
+        return
+    end
+
+    -- Get current recording file
+    local cd = obs.calldata_create()
+    local ph = obs.obs_output_get_proc_handler(recording)
+
+    if ph then
+        -- Try to get the current file being recorded
+        local success = obs.proc_handler_call(ph, "get_last_file", cd)
+        if success then
+            local current_file = obs.calldata_string(cd, "path")
+            if current_file and current_file ~= "" and current_file ~= current_recording_file then
+                -- File changed! Move the previous one
+                if current_recording_file and obs.os_file_exists(current_recording_file) then
+                    log("Split detected: moving previous segment")
+                    process_file_with_game(current_recording_file, recording_folder_name, recording_game_name)
+                end
+                current_recording_file = current_file
+                debug("Now recording to: " .. current_file)
+            end
+        end
+    end
+
+    obs.calldata_destroy(cd)
+    obs.obs_output_release(recording)
+end
+
+-- ============================================================================
+-- FRONTEND EVENT HANDLER
+-- ============================================================================
 
 local function on_event(event)
     if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED then
@@ -828,6 +994,97 @@ local function on_event(event)
             if path then
                 process_file(path)
             end
+        end
+
+    -- ═══════════════════════════════════════════════════════════════
+    -- NEW: Recording support
+    -- ═══════════════════════════════════════════════════════════════
+
+    elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTING then
+        -- Cache current game when recording starts (for file splitting)
+        if CONFIG.organize_recordings then
+            local raw_game = detect_game()
+            recording_game_name = raw_game
+            recording_folder_name = get_game_folder(raw_game)
+            current_recording_file = nil
+
+            if raw_game then
+                log("Recording starting - Game detected: " .. raw_game .. " -> " .. recording_folder_name)
+            else
+                log("Recording starting - No game detected, using: " .. recording_folder_name)
+            end
+
+            -- Connect to file splitting signals
+            -- Note: We do this in RECORDING_STARTED instead because output may not be ready yet
+        end
+
+    elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTED then
+        if CONFIG.organize_recordings then
+            -- Try to connect to recording signals for file splitting
+            connect_recording_signals()
+
+            -- Get initial recording file path and store it
+            local recording = obs.obs_frontend_get_recording_output()
+            if recording then
+                -- Try to get the initial file path
+                local cd = obs.calldata_create()
+                local ph = obs.obs_output_get_proc_handler(recording)
+                if ph then
+                    obs.proc_handler_call(ph, "get_last_file", cd)
+                    current_recording_file = obs.calldata_string(cd, "path")
+                    if current_recording_file and current_recording_file ~= "" then
+                        debug("Initial recording file: " .. current_recording_file)
+                    end
+                end
+                obs.calldata_destroy(cd)
+                obs.obs_output_release(recording)
+            end
+
+            -- Start timer to check for file splits (every 1 second)
+            obs.timer_add(check_split_files, 1000)
+
+            log("Recording started - monitoring for file splits")
+        end
+
+    elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
+        if CONFIG.organize_recordings then
+            -- Stop the file split checking timer FIRST
+            obs.timer_remove(check_split_files)
+
+            local now = os.time()
+            local diff = now - last_recording_time
+
+            local path = get_recording_path()
+
+            -- Spam protection for recordings
+            if diff < CONFIG.duplicate_cooldown then
+                log("Recording spam detected (" .. string.format("%.1f", diff) .. "s)")
+                if CONFIG.delete_spam_files and path then
+                    delete_file(path)
+                    log("Duplicate recording deleted")
+                end
+                files_skipped = files_skipped + 1
+            else
+                last_recording_time = now
+
+                if path then
+                    log("Recording stopped - organizing file")
+                    -- Use cached game name if available, otherwise detect current
+                    if recording_folder_name then
+                        process_file_with_game(path, recording_folder_name, recording_game_name)
+                    else
+                        process_file(path)
+                    end
+                end
+            end
+
+            -- Disconnect signals
+            disconnect_recording_signals()
+
+            -- Clear cached game info
+            recording_game_name = nil
+            recording_folder_name = nil
+            current_recording_file = nil
         end
     end
 end
@@ -1054,7 +1311,7 @@ function script_description()
     return [[
 <center>
 <p style="font-size:24px; font-weight:bold; color:#00d4aa;">SMART REPLAY MOVER</p>
-<p style="color:#888;">Automatic Game Clip Organizer for OBS v2.3</p>
+<p style="color:#888;">Automatic Game Clip Organizer for OBS v2.4.0</p>
 </center>
 
 <hr style="border-color:#333;">
@@ -1076,11 +1333,11 @@ Optional date subfolders
 </p>
 </td></tr>
 <tr><td width="50%" valign="top">
-<p style="color:#ffd93d; font-weight:bold;">CUSTOM NAMES</p>
+<p style="color:#ffd93d; font-weight:bold;">RECORDINGS & REPLAYS</p>
 <p style="font-size:11px;">
-Easy 2-field input for mappings<br>
-Import/Export your settings<br>
-Highest priority matching
+Organizes replay buffer clips<br>
+<b>NEW:</b> Supports regular recordings<br>
+<b>NEW:</b> File splitting support
 </p>
 </td><td width="50%" valign="top">
 <p style="color:#6bcfff; font-weight:bold;">SPAM PROTECTION</p>
@@ -1094,7 +1351,7 @@ Auto-delete spam files
 
 <hr style="border-color:#333;">
 <center>
-<p style="font-size:10px; color:#666;">Save replay + Game detected = Organized clips</p>
+<p style="font-size:10px; color:#666;">Save replay/recording + Game detected = Organized clips</p>
 <p style="font-size:9px; color:#555;">© 2025-2026 MrRazzy | GPL v3 License | <a href="https://github.com/MrRazzy/Smart-Replay-Mover">GitHub</a></p>
 </center>
 ]]
@@ -1107,7 +1364,7 @@ function script_properties()
     -- 📁 FILE NAMING GROUP
     -- ═══════════════════════════════════════════════════════════════
     local naming_group = obs.obs_properties_create()
-    
+
     obs.obs_properties_add_bool(naming_group, "add_game_prefix",
         "✏️  Add game name prefix to filename")
 
@@ -1115,7 +1372,7 @@ function script_properties()
         "📂  Fallback folder name",
         obs.OBS_TEXT_DEFAULT)
 
-    obs.obs_properties_add_group(props, "naming_section", 
+    obs.obs_properties_add_group(props, "naming_section",
         "📁  FILE NAMING", obs.OBS_GROUP_NORMAL, naming_group)
 
     -- ═══════════════════════════════════════════════════════════════
@@ -1178,6 +1435,9 @@ function script_properties()
     obs.obs_properties_add_bool(folder_group, "organize_screenshots",
         "📸  Also organize screenshots")
 
+    obs.obs_properties_add_bool(folder_group, "organize_recordings",
+        "🎬  Organize recordings (Start/Stop Recording)")
+
     obs.obs_properties_add_group(props, "folder_section",
         "🗂️  ORGANIZATION", obs.OBS_GROUP_NORMAL, folder_group)
 
@@ -1213,6 +1473,7 @@ end
 function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "add_game_prefix", true)
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
+    obs.obs_data_set_default_bool(settings, "organize_recordings", true)  -- NEW
     obs.obs_data_set_default_bool(settings, "use_date_subfolders", false)
     obs.obs_data_set_default_string(settings, "fallback_folder", "Desktop")
     obs.obs_data_set_default_double(settings, "duplicate_cooldown", 5.0)
@@ -1226,6 +1487,7 @@ function script_update(settings)
 
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
+    CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")  -- NEW
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
@@ -1254,6 +1516,7 @@ function script_load(settings)
     -- Load all settings first
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
+    CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")  -- NEW
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
@@ -1273,19 +1536,27 @@ function script_load(settings)
     local custom_count = 0
     for _ in pairs(CUSTOM_NAMES) do custom_count = custom_count + 1 end
 
-    log("Smart Replay Mover v2.3 loaded (GPL v3 - github.com/MrRazzy/Smart-Replay-Mover)")
-    log("Prefix: " .. (CONFIG.add_game_prefix and "ON" or "OFF") .. " | Fallback: " .. CONFIG.fallback_folder)
+    log("Smart Replay Mover v2.4.0 loaded (GPL v3 - github.com/MrRazzy/Smart-Replay-Mover)")
+    log("Prefix: " .. (CONFIG.add_game_prefix and "ON" or "OFF") ..
+        " | Recordings: " .. (CONFIG.organize_recordings and "ON" or "OFF") ..
+        " | Fallback: " .. CONFIG.fallback_folder)
     if custom_count > 0 then
         log("Custom names: " .. custom_count .. " mapping(s) loaded")
     end
 end
 
 function script_unload()
+    -- Clean up timer if still running
+    obs.timer_remove(check_split_files)
+
+    -- Clean up recording signal handler
+    disconnect_recording_signals()
+
     log("Session: " .. files_moved .. " moved, " .. files_skipped .. " skipped")
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.3
+-- END OF SCRIPT v2.4.0
 -- Copyright (C) 2025-2026 MrRazzy - Licensed under GPL v3
 -- https://github.com/MrRazzy/Smart-Replay-Mover
 -- ============================================================================
