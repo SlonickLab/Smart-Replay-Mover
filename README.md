@@ -1,260 +1,233 @@
-Smart Replay Mover v2.6.2 (Native Lua) - The Ultimate Zero-Config Organizer
+<div align="center">
 
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # 🎮 Smart Replay Mover
 
-  The Ultimate "Zero-Config" Organizer for OBS Replays, Recordings & Screenshots.
+  ### The Ultimate Zero-Config Organizer for OBS
 
-  Stop messing with Python installations, libraries, and version conflicts.
-  Smart Replay Mover is a native Lua script designed for maximum performance
-  and ease of use. Just add it to OBS, and it works immediately.
+  **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  Unlike other scripts that rely solely on OBS internal hooks, this tool uses
-  Windows API (via FFI) to intelligently detect what you are actually playing
-  directly from the OS. This ensures your clips land in the right folder
-  every time—even if you use Display Capture, Borderless modes, or play
-  games with strict Anti-Cheat systems.
+  [![Version](https://img.shields.io/badge/version-2.6.2-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
+  [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)]()
+  [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
 
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  [Features](#-features) • [Installation](#-installation) • [Configuration](#%EF%B8%8F-configuration) • [Custom Names](#-custom-names) • [Changelog](#-changelog)
 
+  ---
 
+  </div>
 
-  🆕 WHAT'S NEW IN v2.6.2?
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ## ✨ Why Smart Replay Mover?
 
-  🔔 NOTIFICATION SYSTEM
-  • Visual popup notifications when clips are saved!
-    - ShadowPlay-style dark popup in top-right corner
-    - Smooth fade-in/fade-out animations
-    - Click-through (doesn't block your game)
-    - Shows game name and destination folder
+  Stop messing with Python installations, libraries, and version conflicts. Smart Replay Mover is a **native Lua script** designed for maximum performance and ease of use.
 
-  • Smart Fullscreen Detection
-    - In Exclusive Fullscreen: only plays sound (popup can't show)
-    - In Borderless/Windowed: shows popup + sound
+  Unlike other scripts that rely solely on OBS internal hooks, this tool uses **Windows API (via FFI)** to intelligently detect what you're actually playing. This ensures your clips land in the right folder every time—even with Display Capture, Borderless modes, or Anti-Cheat systems.
 
-  • Custom Sound Support
-    - Place "notification_sound.wav" next to the script
-    - Uses your custom sound instead of Windows default
+  <div align="center">
 
+  | ❌ Before | ✅ After |
+  |-----------|----------|
+  | All clips in one messy folder | Organized by game automatically |
+  | Manual sorting after each session | Set and forget |
+  | No idea when clip was saved | Visual + sound notifications |
 
-  🎯 ADVANCED MATCHING MODES
-  • Exact Match: process_name > Folder Name
-  • Keywords Mode: +word1 word2 > Folder Name (all words must match)
-  • Contains Mode: *partial text* > Folder Name (NEW!)
-    - Perfect for games with version numbers in titles
-    - Example: *Space Marine 2* > Space Marine 2
-    - Works regardless of patches/updates!
+  </div>
 
+  ---
 
-  🛡️ EXPANDED IGNORE LIST
-  • Now includes 80+ programs to prevent false detection
-  • Windows 11 widgets, Xbox Game Bar
-  • Hardware utilities: iCUE, Razer Synapse, Logitech G Hub
-  • Recording tools: ShareX, Lightshot, Bandicam
-  • Remote desktop: AnyDesk, TeamViewer, Parsec
+  ## 🚀 Features
 
+  ### 🎯 Intelligent Game Detection
+  - **Windows API Detection** — Checks what Windows is focusing on, not just OBS
+  - **80+ Pre-configured Games** — CS2, Valorant, Dota 2, Elden Ring, and more
+  - **Auto-Pattern Matching** — `minecraft_1.20.exe` → Saves to `Minecraft`
+  - **99.9% Accuracy** — Smart fallback system ensures correct detection
 
-  🐛 BUG FIXES
-  • Fixed white background flash on notification popup
-  • Import now uses default path when empty
-  • Improved debug logging for troubleshooting
+  ### 🔔 Notification System
+  - **Visual Popup** — ShadowPlay-style dark popup with smooth animations
+  - **Smart Fullscreen Detection** — Popup in Borderless, sound-only in Exclusive Fullscreen
+  - **Custom Sound** — Use your own notification sound
+  - **Click-through** — Popup doesn't block your game
 
+  ### 📁 Organization
+  - **Replay Buffer** — Automatically organized
+  - **Regular Recordings** — Start/Stop recording support
+  - **Screenshots** — Optional organization
+  - **File Splitting** — Handles long recording segments correctly
 
+  ### 🛡️ Quality of Life
+  - **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
+  - **Case-Insensitive** — Won't create duplicate folders with different cases
+  - **Date Subfolders** — Optional monthly organization (2025-06/)
+  - **80+ Ignored Programs** — Won't confuse Discord, Chrome, or utilities with games
 
-  ⚡ WHY CHOOSE THIS OVER PYTHON SCRIPTS?
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ---
 
-  ✅ Zero Dependencies
-     No Python. No Tkinter. No complex setup.
+  ## 📥 Installation
 
-  ✅ Superior Detection
-     Works flawlessly where standard "Game Capture" hooks fail.
+  1. **Download** the latest release from [Releases](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
 
-  ✅ Native GUI
-     Configure everything directly in OBS. No editing text files.
+  2. **Extract** the ZIP archive
+     > ⚠️ Do NOT load the .zip file directly into OBS
 
-  ✅ Visual Notifications
-     Know instantly when your clip is saved without alt-tabbing.
+  3. **Move** `Smart Replay Mover.lua` to a permanent location (e.g., Documents)
 
-  ✅ Performance
-     Runs natively inside OBS without external overhead.
+  4. **Add to OBS:**
+     - Open OBS Studio
+     - Go to `Tools` → `Scripts`
+     - Click `+` and select the `.lua` file
 
+  5. **Done!** The script works immediately with default settings.
 
+  ---
 
-  🎮 KEY FEATURES
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ## ⚙️ Configuration
 
-  1️⃣ INTELLIGENT GAME DETECTION (Windows API)
-     We don't just ask OBS what it's recording; we check what Windows
-     is focusing on.
+  Click on the script in OBS Scripts window to access settings:
 
-     • Works with: CS2, Valorant, FACEIT, Dota 2, Elden Ring, and 80+
-       pre-configured games
-     • Auto-Pattern Matching: "minecraft_1.20.exe" → Saves to "Minecraft"
-     • Smart Fallback: Active Process → Window Title → OBS Hook
-     • Result: 99.9% accuracy in sorting files
+  ### 📁 File Naming
+  | Setting | Description |
+  |---------|-------------|
+  | Add game prefix | Adds game name to filename (e.g., `CS2 - Replay...`) |
+  | Fallback folder | Folder name when no game detected (default: `Desktop`) |
 
+  ### 🗂️ Organization
+  | Setting | Description |
+  |---------|-------------|
+  | Monthly subfolders | Creates `YYYY-MM` subfolders |
+  | Organize screenshots | Also sort screenshots |
+  | Organize recordings | Sort regular recordings (not just replays) |
 
-  2️⃣ FLEXIBLE CUSTOM NAME SYSTEM
-     Three matching modes for any situation:
+  ### 🛡️ Spam Protection
+  | Setting | Description |
+  |---------|-------------|
+  | Cooldown | Seconds between saves (prevents duplicates) |
+  | Auto-delete | Automatically remove duplicate files |
 
-     ┌─────────────────────────────────────────────────────────────┐
-     │  FORMAT                      │  DESCRIPTION                 │
-     ├─────────────────────────────────────────────────────────────┤
-     │  CS2 > Counter-Strike 2      │  Exact process match         │
-     │  +Warhammer Marine > SM2     │  Keywords (AND logic)        │
-     │  *Space Marine* > SM2        │  Contains (partial match)    │
-     └─────────────────────────────────────────────────────────────┘
+  ### 🔔 Notifications
+  | Setting | Description |
+  |---------|-------------|
+  | Show popup | Visual notification (Borderless/Windowed only) |
+  | Play sound | Audio notification (works in Fullscreen) |
+  | Duration | How long popup stays visible (1-10 seconds) |
 
-     • Import/Export your custom rules with one click
-     • Share configurations with friends
+  ---
 
+  ## 🎮 Custom Names
 
-  3️⃣ FULL RECORDING SUPPORT
-     • Organizes Replay Buffer clips
-     • Organizes regular recordings (Start/Stop)
-     • Organizes screenshots
-     • Handles file splitting for long recordings
+  Three powerful matching modes for any situation:
 
+  ### Exact Match
+  CS2 > Counter-Strike 2
+  Maps process name directly to folder name.
 
-  4️⃣ ANTI-SPAM & DUPLICATE CLEANUP
-     Did you panic-press your save hotkey during a clutch moment?
-     The script analyzes timestamps and automatically deletes duplicate
-     files created within seconds of each other.
+  ### Keywords Mode
+  +Warhammer Marine > Space Marine 2
+  Matches if **all** keywords are present (AND logic). Prefix with `+`.
 
+  ### Contains Mode
+  Space Marine 2 > Space Marine 2
+  Matches if text is found **anywhere** in process name or window title. Wrap in `*`.
 
-  5️⃣ ORGANIZATION & HYGIENE
-     • Case-Insensitive: Won't create "Call of Duty" AND "call of duty"
-     • Date Sorting: Optional monthly subfolders (2025-06/)
-     • Safety Ignore List: 80+ non-game programs filtered
-     • Unicode Support: Full support for non-English paths
+  > 💡 **Pro Tip:** Contains mode is perfect for games with version numbers that change with updates!
 
+  ### Examples
 
+  | Custom Name | What It Matches |
+  |-------------|-----------------|
+  | `r5apex > Apex Legends` | Process `r5apex.exe` |
+  | `+Warhammer Space > WH40K` | Any window containing both words |
+  | `*Cyberpunk* > Cyberpunk 2077` | `Cyberpunk 2077 v2.1 Patch...` |
 
-  📁 EXAMPLE DIRECTORY STRUCTURE
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ---
 
-  The script automatically organizes your output folder:
+  ## 🔊 Custom Notification Sound
 
-  Code:
-  📂 Videos
-  ├── 📁 Counter-Strike 2
+  1. Find a short sound file (1-2 seconds recommended)
+  2. Convert to **WAV format** if needed
+  3. Rename to `notification_sound.wav`
+  4. Place in the same folder as the script:
+
+  📁 Your Folder/
+  ├── Smart Replay Mover.lua
+  └── notification_sound.wav
+
+  5. Reload the script — done!
+
+  ---
+
+  ## 📂 Output Structure
+
+  The script creates this folder structure automatically:
+
+  📁 Videos/
+  ├── 📁 Counter-Strike 2/
   │   ├── CS2 - 2025-06-15 14-30-01.mp4
   │   └── CS2 - 2025-06-15 14-35-22.png
   │
-  ├── 📁 Valorant
+  ├── 📁 Valorant/
   │   └── Valorant - 2025-06-16 20-10-55.mp4
   │
-  ├── 📁 Warhammer 40K Space Marine 2
+  ├── 📁 Space Marine 2/
   │   └── Space Marine 2 - 2025-06-17 18-45-00.mp4
   │
-  ├── 📁 Desktop (Fallback)
-  │   └── Desktop - 2025-06-17 09-00-00.mp4
-  │
-  └── 📁 Minecraft
-      └── 📁 2025-06 (Optional Date Subfolder)
-          └── Minecraft - 2025-06-18 11-22-33.mp4
+  └── 📁 Desktop/
+      └── Desktop - 2025-06-17 09-00-00.mp4
 
+  ---
 
+  ## 📋 Changelog
 
-  📥 INSTALLATION
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ### v2.6.2 (Latest)
+  - 🔔 **Notification System** — Visual popups + sound notifications
+  - 🎯 **Contains Matching** — New `*pattern*` mode for flexible matching
+  - 🐛 **Fixed** white background flash on popup
+  - 🛡️  **Expanded** ignore list to 80+ programs
+  - 📥 **Improved** import/export functionality
 
-  1. Download the ZIP archive
-  2. Extract the archive (Right-click → Extract All)
-     ⚠️ Do NOT load the .zip file directly into OBS!
-  3. Move "Smart Replay Mover.lua" to a safe folder (e.g., Documents)
-  4. Open OBS → Tools → Scripts
-  5. Click [ + ] and select the .lua file
-  6. Done! ✅
+  ### v2.4.0
+  - 🎬 Full recording support (Start/Stop)
+  - ✂️ File splitting support for long recordings
+  - 🔧 Stability improvements
 
+  <details>
+  <summary>View older versions</summary>
 
+  ### v2.0.0
+  - 🎮 Custom names system with GUI
+  - 📦 Import/Export functionality
+  - 🛡️ Anti-spam protection
 
-  ⚙️ CONFIGURATION
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ### v1.0.0
+  - 🚀 Initial release
+  - 🎯 Basic game detection
+  - 📁 Automatic folder creation
 
-  Click on "Smart Replay Mover.lua" in the Scripts list to see settings:
+  </details>
 
-  📁 FILE NAMING
-     ☑️ Add game name prefix to filename
-     📂 Fallback folder name (default: Desktop)
+  ---
 
-  🎮 CUSTOM NAMES
-     🎯 Process, +keywords, or *contains*
-     📁 Folder name
-     ➕ Add mapping
+  ## 🤝 Contributing
 
-  🗂️ ORGANIZATION
-     ☑️ Create monthly subfolders (YYYY-MM)
-     ☑️ Organize screenshots
-     ☑️ Organize recordings
+  Contributions are welcome! Feel free to:
 
-  🛡️ SPAM PROTECTION
-     ⏱️ Cooldown between saves (0-30 seconds)
-     ☑️ Auto-delete duplicate files
+  - 🐛 Report bugs
+  - 💡 Suggest features
+  - 🎮 Add game mappings
+  - 🌍 Help with translations
 
-  🔔 NOTIFICATIONS
-     ☑️ Show visual popup (Borderless/Windowed only)
-     ☑️ Play notification sound (works in Fullscreen too)
-     ⏱️ Popup duration (1-10 seconds)
+  ---
 
+  ## 📜 License
 
+  This project is licensed under the **GNU General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
 
-  🔊 CUSTOM NOTIFICATION SOUND
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ---
 
-  Want your own notification sound?
+  <div align="center">
 
-  1. Find a short sound (1-2 seconds recommended)
-  2. Convert to WAV format if needed
-  3. Rename to: notification_sound.wav
-  4. Place next to Smart Replay Mover.lua
-  5. Reload the script - done!
+  **Made with ❤️ by SlonickLab**
 
-  Code:
-  📂 C:\obs-scripts\
-  ├── Smart Replay Mover.lua
-  └── notification_sound.wav  ← Your custom sound
+  [⬆ Back to Top](#-smart-replay-mover)
 
-
-
-  💡 USE CASE EXAMPLES
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  🎮 PROBLEM: Game shows as "Warhammer 40,000 Space Marine 2 CLIENT v11.2.799056"
-     and changes with every update
-
-     ✅ SOLUTION: Add custom name: *Space Marine 2* > Space Marine 2
-     Now all clips save to "Space Marine 2" folder regardless of version!
-
-
-  🔔 PROBLEM: I want to know when clips are saved without alt-tabbing
-
-     ✅ SOLUTION: Enable notifications in script settings!
-     • Visual popup in Borderless/Windowed mode
-     • Sound plays even in Exclusive Fullscreen
-
-
-  📋 PROBLEM: I have many custom rules and want to share them
-
-     ✅ SOLUTION: Use Export button to save rules to a text file
-     Share with friends, they can Import with one click!
-
-
-
-  📋 COMPATIBILITY
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  • Windows 10 / 11
-  • OBS Studio 28.x or newer
-  • Tech: Pure Lua + Windows FFI (No external DLLs needed)
-
-
-
-  📜 LICENSE & SOURCE
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  GPL v3 License | Open Source
-  GitHub: https://github.com/SlonickLab/Smart-Replay-Mover
-
-  Made with ❤️ by SlonickLab
+  </div>
