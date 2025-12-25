@@ -1,9 +1,9 @@
 -- ============================================================================
--- Smart Replay Mover v2.5.0
+-- Smart Replay Mover v2.6.2
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
 --
--- Copyright (C) 2025-2026 MrRazzy
+-- Copyright (C) 2025-2026 SlonickLab
 --
 -- This program is free software: you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License as published by
@@ -18,7 +18,7 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program. If not, see <https://www.gnu.org/licenses/>.
 --
--- Source Code: https://github.com/MrRazzy/Smart-Replay-Mover
+-- Source Code: https://github.com/SlonickLab/Smart-Replay-Mover
 --
 -- NOTICE: This script is protected under GPL v3. Any distribution,
 -- modification, or derivative work MUST:
@@ -33,6 +33,21 @@
 local obs = obslua
 local ffi = require("ffi")
 
+-- Get script directory at load time (for custom sound file)
+local SCRIPT_DIR = (function()
+    local info = debug.getinfo(1, "S")
+    if info and info.source then
+        local source = info.source
+        -- Remove @ prefix if present
+        if source:sub(1, 1) == "@" then
+            source = source:sub(2)
+        end
+        -- Extract directory path
+        return source:match("^(.*[/\\])") or ""
+    end
+    return ""
+end)()
+
 -- ============================================================================
 -- CONFIGURATION
 -- ============================================================================
@@ -40,12 +55,16 @@ local ffi = require("ffi")
 local CONFIG = {
     add_game_prefix = true,
     organize_screenshots = true,
-    organize_recordings = true,  -- NEW: Support for regular recordings
+    organize_recordings = true,  -- Support for regular recordings
     use_date_subfolders = false,
     fallback_folder = "Desktop",
     duplicate_cooldown = 5.0,
     delete_spam_files = true,
     debug_mode = false,
+    -- Notification settings
+    show_notifications = true,      -- Visual popup (Borderless Windowed only)
+    play_sound = false,             -- Sound notification (works in Fullscreen too)
+    notification_duration = 3.0,    -- Duration in seconds
 }
 
 -- ============================================================================
@@ -57,12 +76,16 @@ local IGNORE_LIST = {
     "explorer", "searchapp", "taskmgr", "lockapp", "applicationframehost",
     "shellexperiencehost", "systemsettings", "textinputhost",
 
+    -- Windows 11 / Xbox
+    "widgets", "windowsterminal", "wt", "gamebarui", "gamebar",
+    "xbox", "xboxapp", "gamingservices",
+
     -- OBS and streaming
     "obs64", "obs32", "obs", "streamlabs",
 
     -- Communication
     "discord", "telegram", "skype", "teams", "slack", "zoom", "viber",
-    "whatsapp", "signal",
+    "whatsapp", "signal", "guilded", "element", "mumble", "teamspeak", "ventrilo",
 
     -- Browsers
     "chrome", "firefox", "opera", "msedge", "brave", "vivaldi", "safari",
@@ -70,21 +93,31 @@ local IGNORE_LIST = {
 
     -- Media players
     "spotify", "vlc", "wmplayer", "groove", "itunes", "foobar2000",
-    "musicbee", "winamp",
+    "musicbee", "winamp", "deezer", "tidal", "amazonmusic",
 
     -- Game launchers
     "steam", "steamwebhelper", "epicgameslauncher", "battle.net",
     "origin", "eadesktop", "gog", "ubisoft", "bethesda",
-    "riot client", "riotclientservices",
+    "riot client", "riotclientservices", "playnite", "gogalaxy",
+    "rockstar", "socialclub", "amazongames", "primegaming",
 
     -- Editing software
     "photoshop", "lightroom", "gimp", "paint", "mspaint",
     "premiere", "aftereffects", "davinci", "resolve", "vegas",
     "audacity", "audition", "obs",
 
-    -- Overlays
+    -- Overlays and hardware utilities
     "nvidia share", "geforce", "shadowplay", "overwolf", "medal",
     "playstv", "raptr", "amd", "radeon",
+    "corsair", "icue", "razer", "synapse", "logitech", "lghub",
+    "steelseries", "msiafterburner", "afterburner", "rivatuner", "rtss",
+    "nzxt", "hwinfo", "cpuz", "gpuz",
+
+    -- Recording and screenshots
+    "sharex", "lightshot", "greenshot", "bandicam", "fraps", "xsplit", "action",
+
+    -- Remote desktop
+    "anydesk", "teamviewer", "parsec",
 
     -- Development
     "code", "vscode", "sublime", "notepad", "notepad++", "atom",
@@ -93,6 +126,9 @@ local IGNORE_LIST = {
     -- Utilities
     "7zfm", "winrar", "filezilla", "putty", "terminal", "powershell",
     "cmd", "conhost",
+
+    -- Cloud storage
+    "dropbox", "onedrive", "icloud",
 
     -- Google apps
     "google", "googlecrashhandler", "googledrivesync", "backup",
@@ -415,6 +451,27 @@ local recording_folder_name = nil
 local new_process_name = ""
 local new_folder_name = ""
 
+-- Notification system state
+local notification_hwnd = nil           -- Current notification window handle
+local notification_class_registered = false
+local notification_brush = nil          -- Background brush
+local notification_font = nil           -- Text font
+local notification_hinstance = nil      -- Module instance
+
+-- ============================================================================
+-- LOGGING (defined early for use in notification system)
+-- ============================================================================
+
+local function log(msg)
+    print("[Smart Replay] " .. msg)
+end
+
+local function dbg(msg)
+    if CONFIG.debug_mode then
+        print("[Smart Replay DEBUG] " .. msg)
+    end
+end
+
 -- ============================================================================
 -- WINDOWS API
 -- ============================================================================
@@ -426,6 +483,24 @@ ffi.cdef[[
     typedef int BOOL;
     typedef const char* LPCSTR;
     typedef const unsigned short* LPCWSTR;
+    typedef void* HINSTANCE;
+    typedef void* HICON;
+    typedef void* HCURSOR;
+    typedef void* HBRUSH;
+    typedef void* HDC;
+    typedef void* HFONT;
+    typedef void* HGDIOBJ;
+    typedef unsigned int UINT;
+    typedef long LONG;
+    typedef int64_t LONG_PTR;
+    typedef uint64_t UINT_PTR;
+    typedef UINT_PTR WPARAM;
+    typedef LONG_PTR LPARAM;
+    typedef LONG_PTR LRESULT;
+    typedef unsigned short WORD;
+    typedef unsigned short ATOM;
+    typedef unsigned char BYTE;
+    typedef DWORD COLORREF;
 
     HWND GetForegroundWindow();
     DWORD GetWindowThreadProcessId(HWND hWnd, DWORD* lpdwProcessId);
@@ -454,16 +529,579 @@ ffi.cdef[[
 
     HANDLE FindFirstFileA(const char* lpFileName, WIN32_FIND_DATAA* lpFindFileData);
     BOOL FindClose(HANDLE hFindFile);
+
+    // ═══════════════════════════════════════════════════════════════
+    // NOTIFICATION WINDOW API
+    // ═══════════════════════════════════════════════════════════════
+
+    typedef LRESULT (*WNDPROC)(HWND, UINT, WPARAM, LPARAM);
+
+    typedef struct {
+        UINT      cbSize;
+        UINT      style;
+        WNDPROC   lpfnWndProc;
+        int       cbClsExtra;
+        int       cbWndExtra;
+        HINSTANCE hInstance;
+        HICON     hIcon;
+        HCURSOR   hCursor;
+        HBRUSH    hbrBackground;
+        LPCSTR    lpszMenuName;
+        LPCSTR    lpszClassName;
+        HICON     hIconSm;
+    } WNDCLASSEXA;
+
+    typedef struct {
+        LONG left;
+        LONG top;
+        LONG right;
+        LONG bottom;
+    } RECT;
+
+    // Window functions
+    ATOM RegisterClassExA(const WNDCLASSEXA* lpwcx);
+    BOOL UnregisterClassA(LPCSTR lpClassName, HINSTANCE hInstance);
+    HWND CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWindowName,
+                         DWORD dwStyle, int X, int Y, int nWidth, int nHeight,
+                         HWND hWndParent, void* hMenu, HINSTANCE hInstance, void* lpParam);
+    BOOL DestroyWindow(HWND hWnd);
+    BOOL ShowWindow(HWND hWnd, int nCmdShow);
+    HWND FindWindowA(LPCSTR lpClassName, LPCSTR lpWindowName);
+    BOOL UpdateWindow(HWND hWnd);
+    BOOL SetWindowPos(HWND hWnd, HWND hWndInsertAfter, int X, int Y, int cx, int cy, UINT uFlags);
+    BOOL SetLayeredWindowAttributes(HWND hwnd, COLORREF crKey, BYTE bAlpha, DWORD dwFlags);
+    LRESULT DefWindowProcA(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam);
+    HINSTANCE GetModuleHandleA(LPCSTR lpModuleName);
+    int GetSystemMetrics(int nIndex);
+    BOOL InvalidateRect(HWND hWnd, const RECT* lpRect, BOOL bErase);
+
+    // Paint structure for WM_PAINT
+    typedef struct {
+        HDC  hdc;
+        BOOL fErase;
+        RECT rcPaint;
+        BOOL fRestore;
+        BOOL fIncUpdate;
+        BYTE rgbReserved[32];
+    } PAINTSTRUCT;
+
+    // GDI functions for drawing
+    HDC GetDC(HWND hWnd);
+    int ReleaseDC(HWND hWnd, HDC hDC);
+    HDC BeginPaint(HWND hWnd, PAINTSTRUCT* lpPaint);
+    BOOL EndPaint(HWND hWnd, const PAINTSTRUCT* lpPaint);
+    HFONT CreateFontA(int cHeight, int cWidth, int cEscapement, int cOrientation,
+                      int cWeight, DWORD bItalic, DWORD bUnderline, DWORD bStrikeOut,
+                      DWORD iCharSet, DWORD iOutPrecision, DWORD iClipPrecision,
+                      DWORD iQuality, DWORD iPitchAndFamily, LPCSTR pszFaceName);
+    HGDIOBJ SelectObject(HDC hdc, HGDIOBJ h);
+    BOOL DeleteObject(HGDIOBJ ho);
+    int SetBkMode(HDC hdc, int mode);
+    COLORREF SetTextColor(HDC hdc, COLORREF color);
+    BOOL TextOutA(HDC hdc, int x, int y, LPCSTR lpString, int c);
+    int DrawTextA(HDC hdc, LPCSTR lpchText, int cchText, RECT* lprc, UINT format);
+    HBRUSH CreateSolidBrush(COLORREF color);
+    int FillRect(HDC hDC, const RECT* lprc, HBRUSH hbr);
+    BOOL GetClientRect(HWND hWnd, RECT* lpRect);
+
+    // Sound function
+    BOOL PlaySoundA(LPCSTR pszSound, HINSTANCE hmod, DWORD fdwSound);
+
+    // Shell function for fullscreen detection
+    // Returns: 0 = S_OK (success)
+    // State values:
+    //   1 = QUNS_NOT_PRESENT
+    //   2 = QUNS_BUSY
+    //   3 = QUNS_RUNNING_D3D_FULL_SCREEN (Exclusive Fullscreen!)
+    //   4 = QUNS_PRESENTATION_MODE
+    //   5 = QUNS_ACCEPTS_NOTIFICATIONS
+    //   6 = QUNS_QUIET_TIME
+    //   7 = QUNS_APP
+    long SHQueryUserNotificationState(int* pquns);
 ]]
 
 local user32 = ffi.load("user32")
 local kernel32 = ffi.load("kernel32")
 local psapi = ffi.load("psapi")
+local gdi32 = ffi.load("gdi32")
+
+-- Try to load optional libraries
+local winmm = nil
+pcall(function() winmm = ffi.load("winmm") end)
+
+local shell32 = nil
+pcall(function() shell32 = ffi.load("shell32") end)
 
 local PROCESS_QUERY_INFORMATION = 0x0400
 local PROCESS_VM_READ = 0x0010
 local CP_UTF8 = 65001
 local MAX_PATH = 260
+
+-- Window style constants
+local WS_POPUP = 0x80000000
+local WS_VISIBLE = 0x10000000
+local WS_EX_TOPMOST = 0x00000008
+local WS_EX_TRANSPARENT = 0x00000020
+local WS_EX_LAYERED = 0x00080000
+local WS_EX_TOOLWINDOW = 0x00000080
+local WS_EX_NOACTIVATE = 0x08000000
+
+-- Other constants
+local SW_HIDE = 0
+local SW_SHOWNOACTIVATE = 4
+local LWA_ALPHA = 0x00000002
+local SM_CXSCREEN = 0
+local SM_CYSCREEN = 1
+local TRANSPARENT = 1
+local FW_BOLD = 700
+local DEFAULT_CHARSET = 1
+local OUT_DEFAULT_PRECIS = 0
+local CLIP_DEFAULT_PRECIS = 0
+local CLEARTYPE_QUALITY = 5
+local DEFAULT_PITCH = 0
+local DT_CENTER = 0x00000001
+local DT_VCENTER = 0x00000004
+local DT_SINGLELINE = 0x00000020
+
+-- Sound constants
+local SND_ASYNC = 0x0001
+local SND_ALIAS = 0x00010000
+local SND_FILENAME = 0x00020000  -- Play from file
+local SND_NODEFAULT = 0x0002     -- Don't play default sound if file not found
+
+-- Fullscreen detection constants (SHQueryUserNotificationState)
+local QUNS_RUNNING_D3D_FULL_SCREEN = 3  -- Exclusive fullscreen mode
+
+-- Window message constants
+local WM_PAINT = 0x000F
+local WM_ERASEBKGND = 0x0014
+local WM_DESTROY = 0x0002
+local CS_HREDRAW = 0x0002
+local CS_VREDRAW = 0x0001
+
+-- Colors (BGR format for Windows)
+local COLOR_BG = 0x00252525        -- Dark gray background
+local COLOR_TEXT = 0x00FFFFFF      -- White text
+local COLOR_ACCENT = 0x0000D4AA    -- Green accent (your theme color)
+
+-- ============================================================================
+-- NOTIFICATION SYSTEM
+-- ============================================================================
+
+-- Notification window dimensions and identity
+local NOTIFICATION_WIDTH = 300
+local NOTIFICATION_HEIGHT = 70
+local NOTIFICATION_MARGIN = 20
+local NOTIFICATION_WINDOW_TITLE = "SmartReplayMoverNotification"
+
+-- Animation settings
+local FADE_STEP = 25           -- Alpha change per tick (higher = faster)
+local FADE_MAX_ALPHA = 230     -- Maximum opacity (90%)
+local FADE_INTERVAL = 20       -- Timer interval in ms (50 FPS)
+
+-- Notification state
+local notification_end_time = 0
+local notification_title = ""
+local notification_message = ""
+local notification_alpha = 0
+local notification_fade_state = "none"  -- "in", "visible", "out", "none"
+local notification_window_shown = false  -- Track if ShowWindow was called
+
+-- Custom window class (to avoid white background flash from Static class)
+local NOTIFICATION_CLASS_NAME = "SmartReplayNotificationClass"
+local notification_wndproc = nil  -- Must keep reference to prevent GC
+local notification_class_atom = nil
+
+-- Check if app is in exclusive fullscreen mode
+local function is_exclusive_fullscreen()
+    if shell32 == nil then return false end
+
+    local ok, result = pcall(function()
+        local state = ffi.new("int[1]")
+        local hr = shell32.SHQueryUserNotificationState(state)
+        if hr == 0 then  -- S_OK
+            return state[0] == QUNS_RUNNING_D3D_FULL_SCREEN
+        end
+        return false
+    end)
+
+    return ok and result or false
+end
+
+-- Find and destroy any orphaned notification windows
+local function destroy_orphaned_notifications()
+    pcall(function()
+        -- Check for orphaned windows from our custom class
+        for i = 1, 10 do
+            local orphan = user32.FindWindowA(NOTIFICATION_CLASS_NAME, NOTIFICATION_WINDOW_TITLE)
+            if orphan == nil or orphan == ffi.cast("HWND", 0) then
+                break
+            end
+            user32.ShowWindow(orphan, SW_HIDE)
+            user32.DestroyWindow(orphan)
+            dbg("Destroyed orphaned notification window (custom class)")
+        end
+
+        -- Also check for old "Static" class windows (from previous versions)
+        for i = 1, 10 do
+            local orphan = user32.FindWindowA("Static", NOTIFICATION_WINDOW_TITLE)
+            if orphan == nil or orphan == ffi.cast("HWND", 0) then
+                break
+            end
+            user32.ShowWindow(orphan, SW_HIDE)
+            user32.DestroyWindow(orphan)
+            dbg("Destroyed orphaned notification window (Static class)")
+        end
+    end)
+end
+
+-- Hide current notification (immediate)
+local function hide_notification()
+    if notification_hwnd ~= nil then
+        local hwnd = notification_hwnd
+        notification_hwnd = nil
+        notification_fade_state = "none"
+        notification_alpha = 0
+        notification_window_shown = false
+        pcall(function()
+            user32.ShowWindow(hwnd, SW_HIDE)
+            user32.DestroyWindow(hwnd)
+        end)
+        dbg("Notification hidden")
+    end
+    destroy_orphaned_notifications()
+end
+
+-- Draw notification content to a given HDC
+local function draw_notification_to_hdc(hdc, hwnd)
+    if hdc == nil or hwnd == nil then return end
+
+    local rect = ffi.new("RECT")
+    user32.GetClientRect(hwnd, rect)
+
+    -- Background (dark gray)
+    local bg_brush = gdi32.CreateSolidBrush(COLOR_BG)
+    user32.FillRect(hdc, rect, bg_brush)
+    gdi32.DeleteObject(bg_brush)
+
+    -- Accent line (green bar on left)
+    local accent_brush = gdi32.CreateSolidBrush(COLOR_ACCENT)
+    local accent_rect = ffi.new("RECT", {0, 0, 4, rect.bottom})
+    user32.FillRect(hdc, accent_rect, accent_brush)
+    gdi32.DeleteObject(accent_brush)
+
+    -- Title font (bold)
+    local title_font = gdi32.CreateFontA(
+        -15, 0, 0, 0, FW_BOLD, 0, 0, 0,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI"
+    )
+
+    local old_font = gdi32.SelectObject(hdc, title_font)
+    gdi32.SetBkMode(hdc, TRANSPARENT)
+    gdi32.SetTextColor(hdc, COLOR_TEXT)
+
+    -- Draw title
+    local title_rect = ffi.new("RECT", {12, 10, rect.right - 10, 30})
+    user32.DrawTextA(hdc, notification_title, -1, title_rect, 0)
+
+    -- Message font (smaller)
+    local msg_font = gdi32.CreateFontA(
+        -13, 0, 0, 0, 400, 0, 0, 0,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI"
+    )
+    gdi32.SelectObject(hdc, msg_font)
+    gdi32.SetTextColor(hdc, 0x00BBBBBB)
+
+    -- Draw message
+    local msg_rect = ffi.new("RECT", {12, 34, rect.right - 10, rect.bottom - 8})
+    user32.DrawTextA(hdc, notification_message, -1, msg_rect, 0)
+
+    -- Cleanup
+    gdi32.SelectObject(hdc, old_font)
+    gdi32.DeleteObject(title_font)
+    gdi32.DeleteObject(msg_font)
+end
+
+-- Draw notification content (wrapper for compatibility)
+local function draw_notification_content()
+    if notification_hwnd == nil then return end
+
+    pcall(function()
+        local hdc = user32.GetDC(notification_hwnd)
+        if hdc == nil then return end
+        draw_notification_to_hdc(hdc, notification_hwnd)
+        user32.ReleaseDC(notification_hwnd, hdc)
+    end)
+end
+
+-- Window procedure for our custom notification class
+local function notification_wndproc_handler(hwnd, msg, wparam, lparam)
+    -- Handle WM_PAINT - draw our content instead of default white
+    if msg == WM_PAINT then
+        local ps = ffi.new("PAINTSTRUCT")
+        local hdc = user32.BeginPaint(hwnd, ps)
+        if hdc ~= nil then
+            draw_notification_to_hdc(hdc, hwnd)
+            user32.EndPaint(hwnd, ps)
+        end
+        return 0
+    end
+
+    -- Handle WM_ERASEBKGND - prevent default erase (we draw everything in WM_PAINT)
+    if msg == WM_ERASEBKGND then
+        return 1  -- Tell Windows we handled it
+    end
+
+    -- Default processing for other messages
+    return user32.DefWindowProcA(hwnd, msg, wparam, lparam)
+end
+
+-- Register our custom notification window class
+local function register_notification_class()
+    if notification_class_atom ~= nil then
+        return true  -- Already registered
+    end
+
+    local ok, result = pcall(function()
+        if notification_hinstance == nil then
+            notification_hinstance = kernel32.GetModuleHandleA(nil)
+        end
+
+        -- Create callback (must store reference to prevent garbage collection!)
+        notification_wndproc = ffi.cast("WNDPROC", notification_wndproc_handler)
+
+        -- Create dark background brush
+        local bg_brush = gdi32.CreateSolidBrush(COLOR_BG)
+
+        -- Fill window class structure
+        local wc = ffi.new("WNDCLASSEXA")
+        wc.cbSize = ffi.sizeof("WNDCLASSEXA")
+        wc.style = CS_HREDRAW + CS_VREDRAW
+        wc.lpfnWndProc = notification_wndproc
+        wc.cbClsExtra = 0
+        wc.cbWndExtra = 0
+        wc.hInstance = notification_hinstance
+        wc.hIcon = nil
+        wc.hCursor = nil
+        wc.hbrBackground = bg_brush  -- Dark background (prevents white flash!)
+        wc.lpszMenuName = nil
+        wc.lpszClassName = NOTIFICATION_CLASS_NAME
+        wc.hIconSm = nil
+
+        -- Register the class
+        notification_class_atom = user32.RegisterClassExA(wc)
+
+        if notification_class_atom == 0 then
+            dbg("Failed to register notification class")
+            gdi32.DeleteObject(bg_brush)
+            return false
+        end
+
+        -- Store brush for cleanup (it's now owned by the class)
+        notification_brush = bg_brush
+
+        dbg("Registered custom notification class")
+        return true
+    end)
+
+    return ok and result or false
+end
+
+-- Unregister our custom notification window class
+local function unregister_notification_class()
+    if notification_class_atom ~= nil then
+        pcall(function()
+            user32.UnregisterClassA(NOTIFICATION_CLASS_NAME, notification_hinstance)
+        end)
+        notification_class_atom = nil
+    end
+
+    if notification_brush ~= nil then
+        pcall(function()
+            gdi32.DeleteObject(notification_brush)
+        end)
+        notification_brush = nil
+    end
+
+    -- Release callback reference
+    if notification_wndproc ~= nil then
+        notification_wndproc:free()
+        notification_wndproc = nil
+    end
+
+    dbg("Unregistered notification class")
+end
+
+-- Animation timer callback
+local function notification_timer_callback()
+    if notification_hwnd == nil then
+        obs.timer_remove(notification_timer_callback)
+        notification_fade_state = "none"
+        return
+    end
+
+    -- Handle fade states
+    if notification_fade_state == "in" then
+        -- Fade in animation
+        notification_alpha = notification_alpha + FADE_STEP
+        if notification_alpha >= FADE_MAX_ALPHA then
+            notification_alpha = FADE_MAX_ALPHA
+            notification_fade_state = "visible"
+        end
+
+        -- Set alpha BEFORE showing window (prevents flash)
+        user32.SetLayeredWindowAttributes(notification_hwnd, 0, notification_alpha, LWA_ALPHA)
+
+        -- Show window only after first fade step
+        if not notification_window_shown then
+            -- Trigger WM_PAINT to draw content with our dark background
+            user32.InvalidateRect(notification_hwnd, nil, 0)
+            user32.ShowWindow(notification_hwnd, SW_SHOWNOACTIVATE)
+            notification_window_shown = true
+        end
+
+    elseif notification_fade_state == "visible" then
+        -- Check if it's time to start fading out
+        if os.time() >= notification_end_time then
+            notification_fade_state = "out"
+        end
+        -- Trigger repaint via WM_PAINT (our custom class handles it properly)
+        user32.InvalidateRect(notification_hwnd, nil, 0)
+
+    elseif notification_fade_state == "out" then
+        -- Fade out animation
+        notification_alpha = notification_alpha - FADE_STEP
+        if notification_alpha <= 0 then
+            notification_alpha = 0
+            hide_notification()
+            obs.timer_remove(notification_timer_callback)
+            dbg("Notification fade-out complete")
+            return
+        end
+        user32.SetLayeredWindowAttributes(notification_hwnd, 0, notification_alpha, LWA_ALPHA)
+    end
+end
+
+-- Show notification popup
+local function show_notification(title, message)
+    if not CONFIG.show_notifications then return end
+
+    -- Check if in exclusive fullscreen - skip popup, only sound
+    if is_exclusive_fullscreen() then
+        dbg("Exclusive fullscreen detected - skipping popup")
+        return
+    end
+
+    -- Hide existing notification first
+    hide_notification()
+    obs.timer_remove(notification_timer_callback)
+
+    -- Store for redrawing
+    notification_title = title or "Notification"
+    notification_message = message or ""
+    notification_end_time = os.time() + math.ceil(CONFIG.notification_duration)
+    notification_alpha = 0
+    notification_fade_state = "in"
+    notification_window_shown = false
+
+    local ok, err = pcall(function()
+        if notification_hinstance == nil then
+            notification_hinstance = kernel32.GetModuleHandleA(nil)
+        end
+
+        -- Register our custom window class (once)
+        if not register_notification_class() then
+            dbg("Failed to register notification class, cannot show popup")
+            return
+        end
+
+        -- Position (top-right corner)
+        local screen_width = user32.GetSystemMetrics(SM_CXSCREEN)
+        local x = screen_width - NOTIFICATION_WIDTH - NOTIFICATION_MARGIN
+        local y = NOTIFICATION_MARGIN
+
+        -- Window styles
+        local ex_style = WS_EX_TOPMOST + WS_EX_TOOLWINDOW + WS_EX_NOACTIVATE + WS_EX_LAYERED + WS_EX_TRANSPARENT
+
+        destroy_orphaned_notifications()
+
+        -- Create window using our custom class (dark background, no white flash!)
+        notification_hwnd = user32.CreateWindowExA(
+            ex_style,
+            NOTIFICATION_CLASS_NAME,  -- Our custom class instead of "Static"
+            NOTIFICATION_WINDOW_TITLE,
+            WS_POPUP,
+            x, y,
+            NOTIFICATION_WIDTH, NOTIFICATION_HEIGHT,
+            nil, nil,
+            notification_hinstance,
+            nil
+        )
+
+        if notification_hwnd == nil then
+            dbg("CreateWindowExA failed")
+            return
+        end
+
+        -- Start fully transparent (for fade-in)
+        user32.SetLayeredWindowAttributes(notification_hwnd, 0, 0, LWA_ALPHA)
+
+        -- Start animation timer (fast for smooth fade)
+        -- WM_PAINT will handle drawing with our dark background
+        obs.timer_add(notification_timer_callback, FADE_INTERVAL)
+
+        dbg("Notification shown: " .. title .. " | " .. message)
+    end)
+
+    if not ok then
+        dbg("Failed to show notification: " .. tostring(err))
+    end
+end
+
+-- Play notification sound (from file or system)
+local function play_notification_sound()
+    if not CONFIG.play_sound then return end
+    if winmm == nil then return end
+
+    pcall(function()
+        -- Try custom sound file first (in same directory as script)
+        if SCRIPT_DIR and SCRIPT_DIR ~= "" then
+            local sound_file = SCRIPT_DIR .. "notification_sound.wav"
+            -- Try to play from file (SND_NODEFAULT = don't play if file not found)
+            local result = winmm.PlaySoundA(sound_file, nil, SND_FILENAME + SND_ASYNC + SND_NODEFAULT)
+            if result ~= 0 then
+                dbg("Playing custom sound: " .. sound_file)
+                return
+            end
+        end
+
+        -- Fallback to system sound
+        winmm.PlaySoundA("SystemNotification", nil, SND_ALIAS + SND_ASYNC)
+        dbg("Playing system notification sound")
+    end)
+end
+
+-- Combined notification function
+local function notify(title, message)
+    -- Always try to play sound (works in fullscreen too)
+    play_notification_sound()
+    -- Show popup (will be skipped if exclusive fullscreen)
+    show_notification(title, message)
+end
+
+-- Cleanup notification resources
+local function cleanup_notifications()
+    obs.timer_remove(notification_timer_callback)
+    hide_notification()
+    -- Unregister our custom window class
+    unregister_notification_class()
+end
+
+-- ============================================================================
+-- HELPER FUNCTIONS (Handle validation)
+-- ============================================================================
 
 -- Helper to check if a handle is invalid (INVALID_HANDLE_VALUE = -1)
 local function is_invalid_handle(handle)
@@ -476,16 +1114,6 @@ end
 -- ============================================================================
 -- HELPER FUNCTIONS
 -- ============================================================================
-
-local function log(msg)
-    print("[Smart Replay] " .. msg)
-end
-
-local function debug(msg)
-    if CONFIG.debug_mode then
-        print("[Smart Replay DEBUG] " .. msg)
-    end
-end
 
 local function clean_name(str)
     if not str or str == "" then return "Unknown" end
@@ -548,7 +1176,7 @@ local function get_game_folder(raw_name, window_title)
     -- Pass both process name and window title for contains/keywords matching
     local custom = get_custom_name(raw_name, window_title)
     if custom then
-        debug("Custom name match: " .. raw_name .. " -> " .. custom)
+        dbg("Custom name match: " .. raw_name .. " -> " .. custom)
         return custom
     end
 
@@ -637,28 +1265,64 @@ end
 
 local function find_game_in_obs()
     local sources = obs.obs_enum_sources()
-    if not sources then return nil end
+    if not sources then
+        dbg("find_game_in_obs: No sources found")
+        return nil
+    end
 
     local found = nil
 
     for _, source in ipairs(sources) do
         local id = obs.obs_source_get_id(source)
+        local name = obs.obs_source_get_name(source)
+
+        -- Check game_capture sources
         if id == "game_capture" then
             local settings = obs.obs_source_get_settings(source)
             local window = obs.obs_data_get_string(settings, "window")
+            local mode = obs.obs_data_get_string(settings, "capture_mode")
+            local active_window = obs.obs_data_get_string(settings, "active_window")
             obs.obs_data_release(settings)
 
+            dbg("Game Capture '" .. (name or "?") .. "': mode=" .. (mode or "nil") .. ", window=" .. (window or "nil"))
+
+            -- Try window field first (for "Capture specific window" mode)
             if window and window ~= "" then
                 local exe = string.match(window, "([^:]+)$")
                 if exe then
                     found = string.gsub(exe, "%.[eE][xX][eE]$", "")
+                    dbg("Found game from window field: " .. found)
                     break
+                end
+            end
+
+            -- For "Capture any fullscreen application" mode, we need to check if source is active
+            -- and try to get the hooked executable name from the source properties
+            if not found then
+                -- Try to get the currently captured window from the source's private data
+                local proc_handler = obs.obs_source_get_proc_handler(source)
+                if proc_handler then
+                    local cd = obs.calldata_create()
+                    -- Try to call get_hooked_process (if available)
+                    if obs.proc_handler_call(proc_handler, "get_hooked", cd) then
+                        local hooked = obs.calldata_string(cd, "hooked_exe")
+                        if hooked and hooked ~= "" then
+                            found = string.gsub(hooked, "%.[eE][xX][eE]$", "")
+                            dbg("Found game from hooked process: " .. found)
+                        end
+                    end
+                    obs.calldata_destroy(cd)
                 end
             end
         end
     end
 
     obs.source_list_release(sources)
+
+    if not found then
+        dbg("find_game_in_obs: No game found in any Game Capture source")
+    end
+
     return found
 end
 
@@ -668,29 +1332,27 @@ end
 local function detect_game()
     local process = get_active_process()
     local title = get_window_title()
-
-    -- Always capture window title for wildcard matching (even if process is found)
     local window_title_for_matching = title
 
-    -- Try process name first
+    -- 1. Try active window process first
     if process and not is_ignored(process) then
-        debug("Detected from process: " .. process)
+        dbg("Detected from active process: " .. process)
         if title then
-            debug("Window title available: " .. title)
+            dbg("Window title available: " .. title)
         end
         return process, window_title_for_matching
     end
 
-    -- Try window title as main identifier
+    -- 2. Try window title as identifier
     if title and not is_ignored(title) then
-        debug("Detected from window: " .. title)
+        dbg("Detected from window title: " .. title)
         return title, window_title_for_matching
     end
 
-    -- Try OBS game capture source
+    -- 3. Try OBS game capture source (fallback - works when "Capture specific window" mode)
     local obs_game = find_game_in_obs()
     if obs_game and not is_ignored(obs_game) then
-        debug("Detected from OBS: " .. obs_game)
+        dbg("Detected from OBS Game Capture: " .. obs_game)
         return obs_game, window_title_for_matching
     end
 
@@ -739,7 +1401,7 @@ local function delete_file(path)
     end)
 
     if not ok then
-        debug("Windows delete failed, trying os.remove: " .. tostring(err))
+        dbg("Windows delete failed, trying os.remove: " .. tostring(err))
         os.remove(path)
     end
 end
@@ -801,7 +1463,7 @@ local function move_file(src, folder_name, game_name)
         log("WARNING: Source file appears empty or inaccessible: " .. src)
         -- Continue anyway - file might just be very small
     elseif file_size < 1024 then
-        debug("File is very small (" .. file_size .. " bytes), might be incomplete")
+        dbg("File is very small (" .. file_size .. " bytes), might be incomplete")
     end
 
     -- Get real folder name (case-sensitive check)
@@ -818,7 +1480,7 @@ local function move_file(src, folder_name, game_name)
     local new_filename = filename
     local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and game_name ~= CONFIG.fallback_folder
 
-    debug("Prefix check: add_game_prefix=" .. tostring(CONFIG.add_game_prefix) ..
+    dbg("Prefix check: add_game_prefix=" .. tostring(CONFIG.add_game_prefix) ..
           ", game_name=" .. tostring(game_name) ..
           ", fallback=" .. tostring(CONFIG.fallback_folder) ..
           ", will_add=" .. tostring(should_add_prefix))
@@ -826,7 +1488,7 @@ local function move_file(src, folder_name, game_name)
     if should_add_prefix then
         local safe_game = clean_name(game_name)
         new_filename = safe_game .. " - " .. filename
-        debug("Added prefix: " .. new_filename)
+        dbg("Added prefix: " .. new_filename)
     end
 
     local target_path = target_dir .. "/" .. new_filename
@@ -834,7 +1496,7 @@ local function move_file(src, folder_name, game_name)
     -- Validate path length and truncate filename if needed
     local valid, err = validate_path_length(target_path)
     if not valid then
-        debug("Path too long, truncating filename: " .. err)
+        dbg("Path too long, truncating filename: " .. err)
         -- Calculate max filename length based on directory length
         local max_filename_len = MAX_PATH - #target_dir - 2  -- -2 for "/" and null terminator
         if max_filename_len < 20 then
@@ -843,7 +1505,7 @@ local function move_file(src, folder_name, game_name)
         end
         new_filename = truncate_filename(new_filename, max_filename_len)
         target_path = target_dir .. "/" .. new_filename
-        debug("Truncated filename to: " .. new_filename)
+        dbg("Truncated filename to: " .. new_filename)
     end
 
     -- Create directories with race condition protection
@@ -852,14 +1514,14 @@ local function move_file(src, folder_name, game_name)
         log("ERROR: Failed to create folder: " .. base_folder)
         return false
     end
-    debug("Folder ready: " .. base_folder)
+    dbg("Folder ready: " .. base_folder)
 
     if CONFIG.use_date_subfolders then
         if not safe_mkdir(target_dir) then
             log("ERROR: Failed to create date subfolder: " .. target_dir)
             return false
         end
-        debug("Date subfolder ready: " .. target_dir)
+        dbg("Date subfolder ready: " .. target_dir)
     end
 
     -- Move file
@@ -867,7 +1529,7 @@ local function move_file(src, folder_name, game_name)
         log("Moved: " .. new_filename)
         log("To: " .. target_dir)
         if file_size > 0 then
-            debug("File size: " .. string.format("%.2f", file_size / 1024 / 1024) .. " MB")
+            dbg("File size: " .. string.format("%.2f", file_size / 1024 / 1024) .. " MB")
         end
         files_moved = files_moved + 1
         return true
@@ -959,7 +1621,7 @@ local function on_recording_file_changed(calldata)
     -- In file splitting, the signal fires AFTER the split happens
     -- The "next_file" is the NEW file being written to
 
-    debug("File split signal received, next_file: " .. tostring(prev_file))
+    dbg("File split signal received, next_file: " .. tostring(prev_file))
 
     -- We need to track the previous file ourselves
     -- For now, we'll use a small delay and check for the file
@@ -995,7 +1657,7 @@ local function disconnect_recording_signals()
         recording_output_ref = nil
     end
 
-    debug("Disconnected recording signals")
+    dbg("Disconnected recording signals")
 end
 
 -- Connect to recording output signals
@@ -1005,13 +1667,13 @@ local function connect_recording_signals()
 
     local recording = obs.obs_frontend_get_recording_output()
     if not recording then
-        debug("No recording output available to connect signals")
+        dbg("No recording output available to connect signals")
         return false
     end
 
     local sh = obs.obs_output_get_signal_handler(recording)
     if not sh then
-        debug("Could not get signal handler from recording output")
+        dbg("Could not get signal handler from recording output")
         obs.obs_output_release(recording)
         return false
     end
@@ -1023,7 +1685,7 @@ local function connect_recording_signals()
     recording_output_ref = recording
     recording_signal_handler = sh
 
-    debug("Connected to recording file_changed signal")
+    dbg("Connected to recording file_changed signal")
     return true
 end
 
@@ -1062,7 +1724,7 @@ local function check_split_files()
                     process_file_with_game(current_recording_file, recording_folder_name, recording_game_name)
                 end
                 current_recording_file = current_file
-                debug("Now recording to: " .. current_file)
+                dbg("Now recording to: " .. current_file)
             end
         end
     end
@@ -1096,7 +1758,14 @@ local function on_event(event)
         last_save_time = now
 
         if path then
+            -- Detect game for notification before processing
+            local raw_game, window_title = detect_game()
+            local folder_name = get_game_folder(raw_game, window_title)
+
             process_file(path)
+
+            -- Show notification
+            notify("Clip Saved", "Moved to: " .. folder_name)
         end
 
     elseif event == obs.OBS_FRONTEND_EVENT_SCREENSHOT_TAKEN then
@@ -1144,7 +1813,7 @@ local function on_event(event)
                     obs.proc_handler_call(ph, "get_last_file", cd)
                     current_recording_file = obs.calldata_string(cd, "path")
                     if current_recording_file and current_recording_file ~= "" then
-                        debug("Initial recording file: " .. current_recording_file)
+                        dbg("Initial recording file: " .. current_recording_file)
                     end
                 end
                 obs.calldata_destroy(cd)
@@ -1155,6 +1824,10 @@ local function on_event(event)
             obs.timer_add(check_split_files, 1000)
 
             log("Recording started - monitoring for file splits")
+
+            -- Show notification
+            local game_info = recording_folder_name or CONFIG.fallback_folder
+            notify("Recording Started", "Game: " .. game_info)
         end
 
     elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
@@ -1178,6 +1851,9 @@ local function on_event(event)
             else
                 last_recording_time = now
 
+                -- Store folder name before clearing for notification
+                local saved_folder = recording_folder_name or CONFIG.fallback_folder
+
                 if path then
                     log("Recording stopped - organizing file")
                     -- Use cached game name if available, otherwise detect current
@@ -1186,6 +1862,9 @@ local function on_event(event)
                     else
                         process_file(path)
                     end
+
+                    -- Show notification
+                    notify("Recording Saved", "Moved to: " .. saved_folder)
                 end
             end
 
@@ -1406,9 +2085,10 @@ local function on_import_clicked(props, p)
         return false
     end
     local path = obs.obs_data_get_string(script_settings, "import_export_path")
+    -- If no path specified, use default export location
     if path == "" then
-        log("ERROR: Please specify a file path first using the Browse button")
-        return false
+        path = get_default_export_path()
+        log("No path specified, using default: " .. path)
     end
     import_custom_names(path, props)
     return true  -- Refresh properties to show new entries
@@ -1422,7 +2102,7 @@ function script_description()
     return [[
 <center>
 <p style="font-size:24px; font-weight:bold; color:#00d4aa;">SMART REPLAY MOVER</p>
-<p style="color:#888;">Automatic Game Clip Organizer for OBS v2.5.0</p>
+<p style="color:#888;">Automatic Game Clip Organizer for OBS v2.6.2</p>
 </center>
 
 <hr style="border-color:#333;">
@@ -1463,7 +2143,7 @@ Auto-delete spam files
 <hr style="border-color:#333;">
 <center>
 <p style="font-size:10px; color:#666;">Save replay/recording + Game detected = Organized clips</p>
-<p style="font-size:9px; color:#555;">© 2025-2026 MrRazzy | GPL v3 License | <a href="https://github.com/MrRazzy/Smart-Replay-Mover">GitHub</a></p>
+<p style="font-size:9px; color:#555;">© 2025-2026 SlonickLab | GPL v3 License | <a href="https://github.com/SlonickLab/Smart-Replay-Mover">GitHub</a></p>
 </center>
 ]]
 end
@@ -1568,6 +2248,28 @@ function script_properties()
         "🛡️  SPAM PROTECTION", obs.OBS_GROUP_NORMAL, spam_group)
 
     -- ═══════════════════════════════════════════════════════════════
+    -- 🔔 NOTIFICATIONS GROUP
+    -- ═══════════════════════════════════════════════════════════════
+    local notify_group = obs.obs_properties_create()
+
+    obs.obs_properties_add_text(notify_group, "notify_help",
+        "Visual popup works only in Borderless Windowed games!",
+        obs.OBS_TEXT_INFO)
+
+    obs.obs_properties_add_bool(notify_group, "show_notifications",
+        "🖼️  Show visual popup (Borderless Windowed only)")
+
+    obs.obs_properties_add_bool(notify_group, "play_sound",
+        "🔊  Play notification sound (works in Fullscreen too)")
+
+    obs.obs_properties_add_float_slider(notify_group, "notification_duration",
+        "⏱️  Popup duration (seconds)",
+        1.0, 10.0, 0.5)
+
+    obs.obs_properties_add_group(props, "notify_section",
+        "🔔  NOTIFICATIONS", obs.OBS_GROUP_NORMAL, notify_group)
+
+    -- ═══════════════════════════════════════════════════════════════
     -- 🔧 TOOLS GROUP
     -- ═══════════════════════════════════════════════════════════════
     local tools_group = obs.obs_properties_create()
@@ -1584,12 +2286,16 @@ end
 function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "add_game_prefix", true)
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
-    obs.obs_data_set_default_bool(settings, "organize_recordings", true)  -- NEW
+    obs.obs_data_set_default_bool(settings, "organize_recordings", true)
     obs.obs_data_set_default_bool(settings, "use_date_subfolders", false)
     obs.obs_data_set_default_string(settings, "fallback_folder", "Desktop")
     obs.obs_data_set_default_double(settings, "duplicate_cooldown", 5.0)
     obs.obs_data_set_default_bool(settings, "delete_spam_files", true)
     obs.obs_data_set_default_bool(settings, "debug_mode", false)
+    -- Notification defaults
+    obs.obs_data_set_default_bool(settings, "show_notifications", true)
+    obs.obs_data_set_default_bool(settings, "play_sound", false)
+    obs.obs_data_set_default_double(settings, "notification_duration", 3.0)
 end
 
 function script_update(settings)
@@ -1598,12 +2304,16 @@ function script_update(settings)
 
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
-    CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")  -- NEW
+    CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
     CONFIG.delete_spam_files = obs.obs_data_get_bool(settings, "delete_spam_files")
     CONFIG.debug_mode = obs.obs_data_get_bool(settings, "debug_mode")
+    -- Notification settings
+    CONFIG.show_notifications = obs.obs_data_get_bool(settings, "show_notifications")
+    CONFIG.play_sound = obs.obs_data_get_bool(settings, "play_sound")
+    CONFIG.notification_duration = obs.obs_data_get_double(settings, "notification_duration")
 
     if CONFIG.fallback_folder == "" then
         CONFIG.fallback_folder = "Desktop"
@@ -1619,23 +2329,30 @@ function script_update(settings)
     local contains_count = #CUSTOM_NAMES_CONTAINS
     local total_count = exact_count + keywords_count + contains_count
     if total_count > 0 then
-        debug("Loaded " .. total_count .. " custom name mapping(s) (" .. exact_count .. " exact, " .. keywords_count .. " keywords, " .. contains_count .. " contains)")
+        dbg("Loaded " .. total_count .. " custom name mapping(s) (" .. exact_count .. " exact, " .. keywords_count .. " keywords, " .. contains_count .. " contains)")
     end
 end
 
 function script_load(settings)
+    -- Clean up any orphaned notification windows from previous script runs
+    destroy_orphaned_notifications()
+
     -- Store settings reference for import/export callbacks
     script_settings = settings
 
     -- Load all settings first
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
-    CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")  -- NEW
+    CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
     CONFIG.delete_spam_files = obs.obs_data_get_bool(settings, "delete_spam_files")
     CONFIG.debug_mode = obs.obs_data_get_bool(settings, "debug_mode")
+    -- Notification settings
+    CONFIG.show_notifications = obs.obs_data_get_bool(settings, "show_notifications")
+    CONFIG.play_sound = obs.obs_data_get_bool(settings, "play_sound")
+    CONFIG.notification_duration = obs.obs_data_get_double(settings, "notification_duration")
 
     if CONFIG.fallback_folder == "" then
         CONFIG.fallback_folder = "Desktop"
@@ -1651,7 +2368,7 @@ function script_load(settings)
     for _ in pairs(CUSTOM_NAMES_EXACT) do exact_count = exact_count + 1 end
     local custom_count = exact_count + #CUSTOM_NAMES_KEYWORDS + #CUSTOM_NAMES_CONTAINS
 
-    log("Smart Replay Mover v2.5.0 loaded (GPL v3 - github.com/MrRazzy/Smart-Replay-Mover)")
+    log("Smart Replay Mover v2.6.2 loaded (GPL v3 - github.com/SlonickLab/Smart-Replay-Mover)")
     log("Prefix: " .. (CONFIG.add_game_prefix and "ON" or "OFF") ..
         " | Recordings: " .. (CONFIG.organize_recordings and "ON" or "OFF") ..
         " | Fallback: " .. CONFIG.fallback_folder)
@@ -1667,11 +2384,14 @@ function script_unload()
     -- Clean up recording signal handler
     disconnect_recording_signals()
 
+    -- Clean up notification system
+    cleanup_notifications()
+
     log("Session: " .. files_moved .. " moved, " .. files_skipped .. " skipped")
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.5.0
--- Copyright (C) 2025-2026 MrRazzy - Licensed under GPL v3
--- https://github.com/MrRazzy/Smart-Replay-Mover
+-- END OF SCRIPT v2.6.2
+-- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
+-- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
