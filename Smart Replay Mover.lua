@@ -2645,7 +2645,7 @@ local function parse_custom_entry(entry)
 
     -- Check for contains mode (wrapped in *...*)
     if string.sub(path, 1, 1) == "*" and string.sub(path, -1) == "*" and #path > 2 then
-        local pattern = string.sub(path, 2, -2) -- Remove * from both ends
+        local pattern = string.sub(path, 2, -2)    -- Remove * from both ends
         pattern = string.gsub(pattern, "^%s+", "") -- Trim leading space
         pattern = string.gsub(pattern, "%s+$", "") -- Trim trailing space
 
@@ -2658,7 +2658,7 @@ local function parse_custom_entry(entry)
 
     -- Check for keywords mode (starts with + or ~)
     if string.sub(path, 1, 1) == "+" or string.sub(path, 1, 1) == "~" then
-        local keywords_str = string.sub(path, 2)       -- Remove +/~ prefix
+        local keywords_str = string.sub(path, 2)             -- Remove +/~ prefix
         keywords_str = string.gsub(keywords_str, "^%s+", "") -- Trim leading space
 
         local keywords = {}
@@ -4037,7 +4037,7 @@ local function wide_to_utf8(wide_buffer, wide_len)
     return ok and result or nil
 end
 
-local function get_window_title()
+function get_window_title()
     if not WINDOWS_FFI_AVAILABLE or not user32 then
         return nil
     end
@@ -4147,7 +4147,7 @@ normalize_detected_process_name = function(value)
     return cleaned
 end
 
-local function get_obs_window_candidate(window_value)
+function get_obs_window_candidate(window_value)
     if not window_value or window_value == "" then return nil end
 
     local last_segment = nil
@@ -4217,7 +4217,7 @@ function is_portable_obs_source(source_id, source_name)
     return false
 end
 
-local function find_game_in_obs()
+function find_game_in_obs()
     local ok, result, result_window = pcall(function()
         local sources = obs.obs_enum_sources()
         if not sources then
@@ -4263,7 +4263,7 @@ local function find_game_in_obs()
             if id == "game_capture" then
                 if settings then
                     dbg("Game Capture '" ..
-                    (name or "?") .. "': mode=" .. (mode or "nil") .. ", window=" .. (window or "nil"))
+                        (name or "?") .. "': mode=" .. (mode or "nil") .. ", window=" .. (window or "nil"))
                     if window and window ~= "" and not found_window then
                         found_window = window
                     end
@@ -4740,7 +4740,8 @@ local function move_file(src, folder_name, game_name)
             dbg("No-folder mode active, keeping file in output root")
             local new_filename = filename
             -- Still add prefix if enabled and game_name is meaningful
-            local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and (game_name ~= "." and game_name ~= "/" and game_name ~= "\\") and game_name ~= CONFIG.fallback_folder
+            local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and
+                (game_name ~= "." and game_name ~= "/" and game_name ~= "\\") and game_name ~= CONFIG.fallback_folder
             if should_add_prefix then
                 local safe_game = clean_filename(game_name)
                 new_filename = safe_game .. " - " .. filename
@@ -5657,7 +5658,7 @@ local update_check_in_progress = false
 local button_text = "                  🔄  Check for Updates                  "
 
 -- Callback for refresh button - dynamically updates the status text
-local function refresh_update_status(props, p)
+function refresh_update_status(props, p)
     -- Get the update_info property and change its description to current status
     local update_prop = obs.obs_properties_get(props, "update_info")
     if update_prop then
@@ -5674,7 +5675,7 @@ local function refresh_update_status(props, p)
 end
 
 -- Callback for download button - opens releases page in browser (silent, no terminal window)
-local function open_releases_url(props, p)
+function open_releases_url(props, p)
     if IS_WINDOWS and kernel32 then
         local cmd = 'powershell -WindowStyle Hidden -Command "Start-Process \'' .. GITHUB_RELEASES_URL .. '\'"'
         kernel32.WinExec(cmd, 0)
@@ -5746,8 +5747,11 @@ function script_properties()
 
     -- CUSTOM NAMES GROUP
     local custom_group = obs.obs_properties_create()
-    obs.obs_properties_add_text(custom_group, "custom_names_help", "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder | game > / or . (no folder)", obs.OBS_TEXT_INFO)
-    obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(custom_group, "custom_names_help",
+        "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder | game > / or . (no folder)",
+        obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)",
+        obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_text(custom_group, "new_folder_name", "📁  Folder name", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_button(custom_group, "add_mapping_btn", "➕  Add", add_custom_mapping)
     obs.obs_properties_add_editable_list(custom_group, "custom_names", "Your mappings", obs
@@ -5768,7 +5772,9 @@ function script_properties()
     obs.obs_properties_add_bool(buffer_group, "restart_buffer_after_save",
         "🔄  Auto-restart Replay Buffer after save (Prevent Overlap)")
     obs.obs_properties_add_bool(buffer_group, "auto_start_buffer", "▶️  Auto-start Replay Buffer on OBS launch")
-    obs.obs_properties_add_text(buffer_group, "smart_save_help", "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(buffer_group, "smart_save_help",
+        "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!",
+        obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "buffer_section", "🔄  BUFFER CONTROL", obs.OBS_GROUP_NORMAL, buffer_group)
 
     -- ORGANIZATION GROUP
@@ -5986,12 +5992,12 @@ end
 function script_unload()
     obs.timer_remove(check_split_files)
     obs.timer_remove(notification_timer_callback)
-    obs.timer_remove(process_notification_queue)   -- Stop notification queue processor
+    obs.timer_remove(process_notification_queue)  -- Stop notification queue processor
     obs.timer_remove(delayed_recording_init)
     obs.timer_remove(parse_startup_update_result) -- Stop startup update check if still running
-    obs.timer_remove(auto_start_buffer_on_load) -- Cancel auto-start if still pending
+    obs.timer_remove(auto_start_buffer_on_load)   -- Cancel auto-start if still pending
     notification_timer_should_stop = true
-    notification_queue = {}                        -- Discard any pending notifications
+    notification_queue = {}                       -- Discard any pending notifications
 
     disconnect_recording_signals()
 
