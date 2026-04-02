@@ -140,6 +140,8 @@ local CONFIG = {
     -- Buffer Control
     restart_buffer_after_save = false,
     auto_start_buffer = false,
+    -- Process scan detection
+    scan_all_processes = false,
 }
 
 -- State tracking for buffer restart
@@ -2815,6 +2817,24 @@ ffi.cdef[[
     BOOL DeleteFileW(LPCWSTR lpFileName);
     BOOL IsWindow(HWND hWnd);
 
+    // Toolhelp32 Snapshot
+    typedef struct tagPROCESSENTRY32 {
+        DWORD dwSize;
+        DWORD cntUsage;
+        DWORD th32ProcessID;
+        UINT_PTR th32DefaultHeapID;
+        DWORD th32ModuleID;
+        DWORD cntThreads;
+        DWORD th32ParentProcessID;
+        LONG  pcPriClassBase;
+        DWORD dwFlags;
+        char szExeFile[260];
+    } PROCESSENTRY32;
+
+    HANDLE CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID);
+    BOOL Process32First(HANDLE hSnapshot, void* lppe);
+    BOOL Process32Next(HANDLE hSnapshot, void* lppe);
+
     typedef struct {
         DWORD dwFileAttributes;
         DWORD ftCreationTime_L; DWORD ftCreationTime_H;
@@ -2929,6 +2949,7 @@ pcall(function() shell32 = ffi.load("shell32") end)
 local PROCESS_QUERY_INFORMATION = 0x0400
 local PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 local PROCESS_VM_READ = 0x0010
+local TH32CS_SNAPPROCESS = 0x00000002
 local CP_UTF8 = 65001
 local MAX_PATH = 260
 
@@ -3976,21 +3997,53 @@ local function find_game_in_obs()
     return ok and result or nil
 end
 
+local function get_background_game()
+    local ok, result = pcall(function()
+        local snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if is_invalid_handle(snapshot) then return nil end
+
+        local pe32 = ffi.new("PROCESSENTRY32")
+        pe32.dwSize = ffi.sizeof("PROCESSENTRY32")
+
+        if kernel32.Process32First(snapshot, pe32) == 0 then
+            kernel32.CloseHandle(snapshot)
+            return nil
+        end
+
+        repeat
+            local exe_file = ffi.string(pe32.szExeFile)
+            local name = string.gsub(exe_file, "%.[eE][xX][eE]$", ""):lower()
+            
+            if not is_ignored(name) and GAME_DATABASE and GAME_DATABASE[name] then
+                dbg("Background game found via process snapshot: " .. name)
+                kernel32.CloseHandle(snapshot)
+                return name
+            end
+        until kernel32.Process32Next(snapshot, pe32) == 0
+
+        kernel32.CloseHandle(snapshot)
+        return nil
+    end)
+    if not ok then dbg("get_background_game ERROR: " .. tostring(result)) end
+    return ok and result or nil
+end
+
 -- Detect active game
 -- Returns: process_or_game_name, window_title, skip_window_fallback
 local function detect_game()
     local process = get_active_process()
     local title = get_window_title()
     local window_title_for_matching = title
+    local active_ignored = false
 
-    -- 1. If process is in ignore list - DON'T use window title fallback
+    -- 1. Check if active process is in ignore list
     if process and is_ignored(process) then
-        dbg("Process ignored, using fallback: " .. process)
-        return nil, window_title_for_matching, true
+        dbg("Active process ignored: " .. process)
+        active_ignored = true
     end
 
     -- 2. Try active window process
-    if process then
+    if process and not active_ignored then
         dbg("Detected from active process: " .. process)
         if title then
             dbg("Window title available: " .. title)
@@ -4005,7 +4058,21 @@ local function detect_game()
         return obs_game, window_title_for_matching, false
     end
 
-    -- 4. Nothing detected - CAN use window title fallback (anti-cheat case)
+    -- 4. Try background process scan (Fallback)
+    if CONFIG.scan_all_processes then
+        local bg_game = get_background_game()
+        if bg_game then
+            dbg("Detected from running process scan (fallback): " .. bg_game)
+            return bg_game, window_title_for_matching, false
+        end
+    end
+
+    -- 5. Nothing detected. Determine if we should skip window title fallback.
+    if active_ignored then
+        dbg("No game detected, skipping window title fallback (active process was ignored)")
+        return nil, window_title_for_matching, true
+    end
+
     dbg("No game detected, will try window title fallback")
     return nil, window_title_for_matching, false
 end
@@ -5071,6 +5138,7 @@ local function read_config(settings)
     CONFIG.ffmpeg_path = obs.obs_data_get_string(settings, "ffmpeg_path")
     CONFIG.restart_buffer_after_save = obs.obs_data_get_bool(settings, "restart_buffer_after_save")
     CONFIG.auto_start_buffer = obs.obs_data_get_bool(settings, "auto_start_buffer")
+    CONFIG.scan_all_processes = obs.obs_data_get_bool(settings, "scan_all_processes")
     CONFIG.notification_position = obs.obs_data_get_string(settings, "notification_position")
 
     if CONFIG.fallback_folder == "" then
@@ -5321,6 +5389,8 @@ function script_properties()
     obs.obs_properties_add_bool(folder_group, "use_date_subfolders", "📅  Create monthly subfolders (YYYY-MM)")
     obs.obs_properties_add_bool(folder_group, "organize_screenshots", "📸  Also organize screenshots")
     obs.obs_properties_add_bool(folder_group, "organize_recordings", "🎬  Organize recordings (Start/Stop Recording)")
+    obs.obs_properties_add_bool(folder_group, "scan_all_processes", "🔍  Detect game by scanning all running processes")
+    obs.obs_properties_add_text(folder_group, "scan_all_processes_help", "Detects background games when focused on Discord or Desktop (acts as a smart fallback).", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "folder_section", "🗂️  ORGANIZATION", obs.OBS_GROUP_NORMAL, folder_group)
 
     -- SPAM PROTECTION GROUP
@@ -5386,6 +5456,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_string(settings, "ffmpeg_path", "")
     obs.obs_data_set_default_bool(settings, "restart_buffer_after_save", false)
     obs.obs_data_set_default_bool(settings, "auto_start_buffer", false)
+    obs.obs_data_set_default_bool(settings, "scan_all_processes", false)
     obs.obs_data_set_default_string(settings, "notification_position", "top_right")
 end
 
