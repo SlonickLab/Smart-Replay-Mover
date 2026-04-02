@@ -3789,6 +3789,11 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
         return custom
     end
 
+    if is_generic_steam_app_identifier(raw_name) then
+        dbg("Ignoring generic Steam app identifier for folder naming: " .. tostring(raw_name))
+        raw_name = nil
+    end
+
     -- If process name available, try to match it
     if raw_name and raw_name ~= "" then
         local lower = string.lower(raw_name)
@@ -4010,6 +4015,11 @@ local function get_window_title()
 end
 
 local normalize_detected_process_name
+
+function is_generic_steam_app_identifier(value)
+    if not value or value == "" then return false end
+    return string.match(string.lower(tostring(value)), "^steam_app_%d+([.]desktop)?$") ~= nil
+end
 
 function get_active_kwin_window_info()
     if IS_WINDOWS or os.getenv("XDG_CURRENT_DESKTOP") ~= "KDE" or not command_exists("gdbus") then
