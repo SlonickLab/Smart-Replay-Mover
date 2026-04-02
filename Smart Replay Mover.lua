@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.8.1
+-- Smart Replay Mover v2.8.2
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.8.1"
+local VERSION = "2.8.2"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,11 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.8.2:
+--   - Added "Scan all running processes" fallback option (Thanks @EndCod3r)
+--   - Implemented zero-overhead Toolhelp32Snapshot API for safe process detection instead of OpenProcess
+--   - Fixed detection bug where alt-tabbing to Discord/OBS bypassed OBS Capture & Background game fallbacks
+--
 -- CHANGELOG v2.8.1 (HOTFIX):
 --   - CRITICAL FIX: Smart Save Hotkey no longer crashes/freezes OBS
 --   - Root cause: cross-thread Win32 GDI calls from hotkey/UI/graphics threads
@@ -5608,7 +5613,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.8.1
+-- END OF SCRIPT v2.8.2
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
