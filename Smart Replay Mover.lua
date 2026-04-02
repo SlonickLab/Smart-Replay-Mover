@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.7.9
+-- Smart Replay Mover v2.8.1
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.7.9"
+local VERSION = "2.8.1"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,19 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.8.1 (HOTFIX):
+--   - CRITICAL FIX: Smart Save Hotkey no longer crashes/freezes OBS
+--   - Root cause: cross-thread Win32 GDI calls from hotkey/UI/graphics threads
+--   - Solution: thread-safe notification queue (notify() pushes to queue,
+--     single graphics-thread timer processes all Win32/GDI operations)
+--   - Fixed double detect_game() call in replay buffer save handler
+--   - Smart skip: if save is fast, "Saving..." is skipped in favor of "Clip Saved"
+--
+-- CHANGELOG v2.8.0:
+--   - Added "No Folder" mode: map process to "." to keep files in OBS output root
+--   - Added Smart Save Hotkey with instant "Saving..." notification feedback
+--   - Cleaned up duplicate ffi.cdef type declarations (code quality)
+--
 -- CHANGELOG v2.7.9:
 --   - Fixed is_ignored() false positives ("obs" no longer matches "observer")
 --   - Converted process ignore check to exact-match hash set (O(1) lookup)
@@ -3651,10 +3664,46 @@ local function play_notification_sound()
     end)
 end
 
--- Combined notification function
+-- ============================================================================
+-- THREAD-SAFE NOTIFICATION QUEUE
+-- ============================================================================
+-- PROBLEM: notify() is called from multiple threads:
+--   - Hotkey callbacks  → OBS hotkey thread
+--   - on_event()        → OBS UI/main thread
+--   - Timer callbacks   → OBS graphics thread
+-- Win32 windows MUST be created and manipulated from the SAME thread.
+-- Cross-thread Win32 operations cause undefined behavior (hangs/deadlocks).
+--
+-- SOLUTION: notify() just pushes a message into a Lua table (queue).
+-- process_notification_queue() is the ONLY function that calls show_notification()
+-- and play_notification_sound(). It runs exclusively on the graphics thread via
+-- a dedicated obs.timer_add, ensuring all GDI/Win32 calls are on one thread.
+-- ============================================================================
+
+local notification_queue = {}
+
+-- Thread-safe: safe to call from hotkey thread, UI thread, or graphics thread.
+-- Does NO Win32/GDI work — only inserts into a Lua table.
 local function notify(title, message)
+    table.insert(notification_queue, { title = title, message = message })
+end
+
+-- Runs on the graphics thread every 50ms via obs.timer_add in script_load.
+-- This is the SOLE consumer of notification_queue.
+local function process_notification_queue()
+    if #notification_queue == 0 then return end
+
+    local notif = table.remove(notification_queue, 1)
+
+    -- Optimization for fast systems (NVMe/SSD):
+    -- If "Saving..." is immediately followed by another notification (e.g. "Clip Saved"),
+    -- skip the intermediate "Saving..." and show the final result right away.
+    if notif.title == "Saving..." and #notification_queue > 0 then
+        notif = table.remove(notification_queue, 1)
+    end
+
     play_notification_sound()
-    show_notification(title, message)
+    show_notification(notif.title, notif.message)
 end
 
 -- Cleanup notification resources
@@ -4461,7 +4510,6 @@ if WINDOWS_FFI_AVAILABLE then
     typedef void* HWND;
     typedef void* HINSTANCE;
     typedef unsigned long DWORD;
-
     typedef struct {
         DWORD cbSize;
         DWORD fMask;
@@ -4485,8 +4533,6 @@ if WINDOWS_FFI_AVAILABLE then
 
     int ShellExecuteExA(SHELLEXECUTEINFOA* pExecInfo);
     DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
-    int CloseHandle(HANDLE hObject);
-    BOOL TerminateProcess(HANDLE hProcess, UINT uExitCode);
 ]]
 
     ffmpeg_shell32 = ffi.load("shell32")
@@ -4684,6 +4730,36 @@ local function move_file(src, folder_name, game_name)
             log("WARNING: Source file appears empty or inaccessible: " .. src)
         elseif file_size < 1024 then
             dbg("File is very small (" .. file_size .. " bytes), might be incomplete")
+        end
+
+        -- ═══════════════════════════════════════════════════════════════
+        -- "NO FOLDER" MODE: folder_name == ".", "/", or "\" means keep in OBS root
+        -- File stays in the same directory, only prefix is added (if enabled)
+        -- ═══════════════════════════════════════════════════════════════
+        if folder_name == "." or folder_name == "/" or folder_name == "\\" then
+            dbg("No-folder mode active, keeping file in output root")
+            local new_filename = filename
+            -- Still add prefix if enabled and game_name is meaningful
+            local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and (game_name ~= "." and game_name ~= "/" and game_name ~= "\\") and game_name ~= CONFIG.fallback_folder
+            if should_add_prefix then
+                local safe_game = clean_filename(game_name)
+                new_filename = safe_game .. " - " .. filename
+                dbg("No-folder mode: added prefix -> " .. new_filename)
+            end
+            local target_path = dir .. "/" .. new_filename
+            -- If filename didn't change, nothing to do
+            if target_path == src then
+                log("No-folder mode: file already in place (no prefix): " .. filename)
+                files_moved = files_moved + 1
+                return true
+            end
+            if obs.os_rename(src, target_path) then
+                log("Renamed (no-folder mode): " .. new_filename)
+                files_moved = files_moved + 1
+                return true
+            end
+            log("ERROR: Failed to rename file in no-folder mode")
+            return false
         end
 
         local safe_folder = clean_folder_path(folder_name)
@@ -5034,7 +5110,9 @@ local function on_event(event)
                 local raw_game, window_title, skip_fallback = detect_game()
                 local folder_name = get_game_folder(raw_game, window_title, skip_fallback)
 
-                process_file(path)
+                -- Use process_file_with_game to avoid calling detect_game() a second time
+                -- inside process_file() which would cause a race if the active window changed
+                process_file_with_game(path, folder_name, raw_game)
 
                 notify("Clip Saved", "Moved to: " .. folder_name)
 
@@ -5668,11 +5746,8 @@ function script_properties()
 
     -- CUSTOM NAMES GROUP
     local custom_group = obs.obs_properties_create()
-    obs.obs_properties_add_text(custom_group, "custom_names_help",
-        "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder",
-        obs.OBS_TEXT_INFO)
-    obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)",
-        obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(custom_group, "custom_names_help", "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder | game > / or . (no folder)", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_text(custom_group, "new_folder_name", "📁  Folder name", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_button(custom_group, "add_mapping_btn", "➕  Add", add_custom_mapping)
     obs.obs_properties_add_editable_list(custom_group, "custom_names", "Your mappings", obs
@@ -5693,6 +5768,7 @@ function script_properties()
     obs.obs_properties_add_bool(buffer_group, "restart_buffer_after_save",
         "🔄  Auto-restart Replay Buffer after save (Prevent Overlap)")
     obs.obs_properties_add_bool(buffer_group, "auto_start_buffer", "▶️  Auto-start Replay Buffer on OBS launch")
+    obs.obs_properties_add_text(buffer_group, "smart_save_help", "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "buffer_section", "🔄  BUFFER CONTROL", obs.OBS_GROUP_NORMAL, buffer_group)
 
     -- ORGANIZATION GROUP
@@ -5801,6 +5877,30 @@ function script_update(settings)
     end
 end
 
+-- Smart Save Hotkey state
+local smart_save_hotkey_id = nil
+
+-- Smart Save Hotkey callback.
+-- notify() is now thread-safe (pushes to queue only, no Win32 calls).
+-- obs_frontend_replay_buffer_save() is thread-safe (uses OBS signal handler internally).
+-- Both can be called directly from the hotkey thread -- no timer deferral needed.
+local function smart_save_replay(pressed)
+    if not pressed then return end
+
+    local ok, err = pcall(function()
+        -- Queue "Saving..." -- displayed by process_notification_queue on the graphics thread.
+        -- On fast systems (NVMe), save completes before the 50ms timer fires, so the
+        -- optimization in process_notification_queue skips it and shows "Clip Saved" directly.
+        notify("Saving...", "Replay buffer saving...")
+        dbg("Smart Save: queued instant notification, triggering save")
+        obs.obs_frontend_replay_buffer_save()
+    end)
+
+    if not ok then
+        log("ERROR in Smart Save hotkey: " .. tostring(err))
+    end
+end
+
 function script_load(settings)
     destroy_orphaned_notifications()
 
@@ -5809,6 +5909,26 @@ function script_load(settings)
     load_custom_names(settings)
 
     obs.obs_frontend_add_event_callback(on_event)
+
+    -- Start the notification queue processor on the graphics thread.
+    -- This is the ONLY place that calls show_notification() / play_notification_sound().
+    -- All notify() calls from any thread are safe because they only push to the queue.
+    obs.timer_add(process_notification_queue, 50)
+
+    -- Register Smart Save Replay hotkey
+    smart_save_hotkey_id = obs.obs_hotkey_register_frontend(
+        "smart_save_replay",
+        "Smart Save Replay (Instant Notification)",
+        smart_save_replay
+    )
+
+    -- Load saved hotkey binding
+    local hotkey_save_array = obs.obs_data_get_array(settings, "smart_save_replay_hotkey")
+    if hotkey_save_array then
+        obs.obs_hotkey_load(smart_save_hotkey_id, hotkey_save_array)
+        obs.obs_data_array_release(hotkey_save_array)
+    end
+    dbg("Smart Save Replay hotkey registered")
 
     local exact_count = 0
     for _ in pairs(CUSTOM_NAMES_EXACT) do exact_count = exact_count + 1 end
@@ -5854,13 +5974,24 @@ function script_load(settings)
     end
 end
 
+-- Save hotkey binding when settings are saved
+function script_save(settings)
+    if smart_save_hotkey_id then
+        local hotkey_save_array = obs.obs_hotkey_save(smart_save_hotkey_id)
+        obs.obs_data_set_array(settings, "smart_save_replay_hotkey", hotkey_save_array)
+        obs.obs_data_array_release(hotkey_save_array)
+    end
+end
+
 function script_unload()
     obs.timer_remove(check_split_files)
     obs.timer_remove(notification_timer_callback)
+    obs.timer_remove(process_notification_queue)   -- Stop notification queue processor
     obs.timer_remove(delayed_recording_init)
     obs.timer_remove(parse_startup_update_result) -- Stop startup update check if still running
     obs.timer_remove(auto_start_buffer_on_load) -- Cancel auto-start if still pending
     notification_timer_should_stop = true
+    notification_queue = {}                        -- Discard any pending notifications
 
     disconnect_recording_signals()
 
@@ -5879,7 +6010,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.7.9
+-- END OF SCRIPT v2.8.1
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
