@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.8.1-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.8.2-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -296,6 +296,11 @@
 
   ## 📋 Changelog
   
+  ### v2.8.2
+  - **🔍 Background Game Detection** — Added an option to scan all running processes for a game if the active window isn't one. This serves as a smart fallback if you alt-tabbed to Discord or the desktop before saving a clip! (Feature request: @EndCod3r)
+  - **🛡️ 100% Anti-Cheat Safe** — The implementation uses zero-overhead, read-only `Toolhelp32Snapshot` APIs, rendering it completely invisible to anti-cheat systems.
+  - **🐛 Alt-Tab Detection Fix** — Fixed a logic flaw where alt-tabbing to an ignored process (like OBS) would previously bypass OBS Game Capture checks.
+
   ### v2.8.1 (Hotfix)
   - **🛡️ CRITICAL FIX** — Smart Save Hotkey no longer crashes or freezes OBS ([Discussion #16](https://github.com/SlonickLab/Smart-Replay-Mover/discussions/16))
   - **🧵 Thread-Safe Notifications** — All notification calls now go through a safe queue processed exclusively on one thread, eliminating cross-thread Win32 GDI deadlocks
