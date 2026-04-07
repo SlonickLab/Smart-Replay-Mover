@@ -4265,37 +4265,6 @@ local function get_background_game()
     return ok and result or nil
 end
 
-local function get_background_game()
-    local ok, result = pcall(function()
-        local snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-        if is_invalid_handle(snapshot) then return nil end
-
-        local pe32 = ffi.new("PROCESSENTRY32")
-        pe32.dwSize = ffi.sizeof("PROCESSENTRY32")
-
-        if kernel32.Process32First(snapshot, pe32) == 0 then
-            kernel32.CloseHandle(snapshot)
-            return nil
-        end
-
-        repeat
-            local exe_file = ffi.string(pe32.szExeFile)
-            local name = string.gsub(exe_file, "%.[eE][xX][eE]$", ""):lower()
-            
-            if not is_ignored(name) and GAME_DATABASE and GAME_DATABASE[name] then
-                dbg("Background game found via process snapshot: " .. name)
-                kernel32.CloseHandle(snapshot)
-                return name
-            end
-        until kernel32.Process32Next(snapshot, pe32) == 0
-
-        kernel32.CloseHandle(snapshot)
-        return nil
-    end)
-    if not ok then dbg("get_background_game ERROR: " .. tostring(result)) end
-    return ok and result or nil
-end
-
 -- Detect active game
 -- Returns: process_or_game_name, window_title, skip_window_fallback
 local function detect_game()
@@ -5156,8 +5125,8 @@ local function add_custom_mapping(props, p)
 end
 
 local function get_default_export_path()
-    local home = os.getenv("USERPROFILE") or os.getenv("HOME") or "C:"
-    return home .. "\\smart_replay_custom_names.txt"
+    local home = os.getenv("USERPROFILE") or os.getenv("HOME") or TEMP_DIR
+    return join_path(home, "smart_replay_custom_names.txt")
 end
 
 local function export_custom_names(path)
