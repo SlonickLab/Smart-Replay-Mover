@@ -43,6 +43,7 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 --   - Cross-platform helpers: join_path(), quote_shell_arg(), run_shell_command()
 --   - FFmpeg execution via shell commands on Linux (no .bat files)
 --   - Steam app identifier handling for Linux .desktop files
+--   - Quiet sound toggle (notification_sound_silent.wav) works on Linux via paplay/pw-play
 --   - Audit fixes: restored corrupted show_notification, removed stray end,
 --     added missing FFI declarations (FindWindowA, GetModuleHandleA,
 --     GetSystemMetrics, WinExec, WNDCLASSEXA, RegisterClassExA),
@@ -5674,7 +5675,6 @@ function script_properties()
         -- Windows-only: Win32 visual popup settings
         set_vis("notification_scale", is_win)
         set_vis("notification_position", is_win)
-        set_vis("use_quiet_sound", is_win)
         set_vis("notify_help", is_win)
 
         -- Windows-only: update checker (uses powershell + WinExec)
@@ -5715,7 +5715,6 @@ function script_properties()
         hide("scan_all_processes_help")
         hide("notification_scale")
         hide("notification_position")
-        hide("use_quiet_sound")
         hide("notify_help")
         hide("refresh_status_btn")
         hide("refresh_hint")
