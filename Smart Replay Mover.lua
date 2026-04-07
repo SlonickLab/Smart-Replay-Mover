@@ -32,6 +32,23 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.9.0:
+--   - Linux Support: game detection via xprop (X11) and gdbus (KDE/Wayland)
+--   - Linux notifications via notify-send, sound via paplay/pw-play
+--   - OS Mode Selector (Auto-Detect / Windows / Linux) in Tools & Debug
+--   - Adaptive UI: Windows-only settings auto-hide on Linux
+--   - All FFI declarations consolidated into single guarded block
+--   - Every platform-specific path wrapped in pcall() for crash-proof stability
+--   - Linux OBS source scanning (xcomposite, pipewire, xshm)
+--   - Cross-platform helpers: join_path(), quote_shell_arg(), run_shell_command()
+--   - FFmpeg execution via shell commands on Linux (no .bat files)
+--   - Steam app identifier handling for Linux .desktop files
+--   - Audit fixes: restored corrupted show_notification, removed stray end,
+--     added missing FFI declarations (FindWindowA, GetModuleHandleA,
+--     GetSystemMetrics, WinExec, WNDCLASSEXA, RegisterClassExA),
+--     added SEE_MASK_NOCLOSEPROCESS constant, fixed Lua pattern syntax,
+--     fixed nil crash in GITHUB_VERSION_FILE on Linux
+--
 -- CHANGELOG v2.8.2:
 --   - Added "Scan all running processes" fallback option (Thanks @EndCod3r)
 --   - Implemented zero-overhead Toolhelp32Snapshot API for safe process detection instead of OpenProcess
@@ -2244,123 +2261,123 @@ local GAME_NAMES = {
 
 local GAME_PATTERNS = {
     -- Popular games (process name keywords)
-    { "minecraft",        "Minecraft" },
-    { "roblox",           "Roblox" },
-    { "fortnite",         "Fortnite" },
-    { "valorant",         "Valorant" },
-    { "league",           "League of Legends" },
-    { "overwatch",        "Overwatch 2" },
-    { "warzone",          "Call of Duty Warzone" },
-    { "modernwarfare",    "Call of Duty" },
-    { "call of duty",     "Call of Duty" },
-    { "cod",              "Call of Duty" },
-    { "eurotrucks",       "Euro Truck Simulator 2" },
-    { "ets2",             "Euro Truck Simulator 2" },
-    { "rocketleague",     "Rocket League" },
-    { "rustclient",       "Rust" },
-    { "pubg",             "PUBG" },
-    { "tslgame",          "PUBG" },
-    { "rainbowsix",       "Rainbow Six Siege" },
-    { "siege",            "Rainbow Six Siege" },
-    { "destiny2",         "Destiny 2" },
-    { "destiny",          "Destiny 2" },
-    { "cyberpunk",        "Cyberpunk 2077" },
-    { "witcher",          "The Witcher 3" },
-    { "genshin",          "Genshin Impact" },
-    { "honkai",           "Honkai Star Rail" },
-    { "starrail",         "Honkai Star Rail" },
-    { "eldenring",        "Elden Ring" },
-    { "darksouls",        "Dark Souls" },
-    { "stardew",          "Stardew Valley" },
-    { "terraria",         "Terraria" },
-    { "amongus",          "Among Us" },
-    { "among us",         "Among Us" },
-    { "deadbydaylight",   "Dead by Daylight" },
-    { "dbd",              "Dead by Daylight" },
-    { "hoi4",             "Hearts of Iron IV" },
-    { "factorio",         "Factorio" },
-    { "baldur",           "Baldur's Gate 3" },
-    { "bg3",              "Baldur's Gate 3" },
-    { "palworld",         "Palworld" },
-    { "phasmophobia",     "Phasmophobia" },
-    { "left4dead",        "Left 4 Dead 2" },
-    { "l4d",              "Left 4 Dead 2" },
-    { "teamfortress",     "Team Fortress 2" },
-    { "tf2",              "Team Fortress 2" },
-    { "helldivers",       "Helldivers 2" },
-    { "starfield",        "Starfield" },
-    { "skyrim",           "The Elder Scrolls V Skyrim" },
-    { "fallout",          "Fallout" },
-    { "diablo",           "Diablo" },
-    { "wow",              "World of Warcraft" },
-    { "warcraft",         "World of Warcraft" },
-    { "apex",             "Apex Legends" },
+    {"minecraft", "Minecraft"},
+    {"roblox", "Roblox"},
+    {"fortnite", "Fortnite"},
+    {"valorant", "Valorant"},
+    {"league", "League of Legends"},
+    {"overwatch", "Overwatch 2"},
+    {"warzone", "Call of Duty Warzone"},
+    {"modernwarfare", "Call of Duty"},
+    {"call of duty", "Call of Duty"},
+    {"cod", "Call of Duty"},
+    {"eurotrucks", "Euro Truck Simulator 2"},
+    {"ets2", "Euro Truck Simulator 2"},
+    {"rocketleague", "Rocket League"},
+    {"rustclient", "Rust"},
+    {"pubg", "PUBG"},
+    {"tslgame", "PUBG"},
+    {"rainbowsix", "Rainbow Six Siege"},
+    {"siege", "Rainbow Six Siege"},
+    {"destiny2", "Destiny 2"},
+    {"destiny", "Destiny 2"},
+    {"cyberpunk", "Cyberpunk 2077"},
+    {"witcher", "The Witcher 3"},
+    {"genshin", "Genshin Impact"},
+    {"honkai", "Honkai Star Rail"},
+    {"starrail", "Honkai Star Rail"},
+    {"eldenring", "Elden Ring"},
+    {"darksouls", "Dark Souls"},
+    {"stardew", "Stardew Valley"},
+    {"terraria", "Terraria"},
+    {"amongus", "Among Us"},
+    {"among us", "Among Us"},
+    {"deadbydaylight", "Dead by Daylight"},
+    {"dbd", "Dead by Daylight"},
+    {"hoi4", "Hearts of Iron IV"},
+    {"factorio", "Factorio"},
+    {"baldur", "Baldur's Gate 3"},
+    {"bg3", "Baldur's Gate 3"},
+    {"palworld", "Palworld"},
+    {"phasmophobia", "Phasmophobia"},
+    {"left4dead", "Left 4 Dead 2"},
+    {"l4d", "Left 4 Dead 2"},
+    {"teamfortress", "Team Fortress 2"},
+    {"tf2", "Team Fortress 2"},
+    {"helldivers", "Helldivers 2"},
+    {"starfield", "Starfield"},
+    {"skyrim", "The Elder Scrolls V Skyrim"},
+    {"fallout", "Fallout"},
+    {"diablo", "Diablo"},
+    {"wow", "World of Warcraft"},
+    {"warcraft", "World of Warcraft"},
+    {"apex", "Apex Legends"},
 
     -- War Thunder / World of Tanks
-    { "warthunder",       "War Thunder" },
-    { "gaijin",           "War Thunder" },
-    { "worldoftanks",     "World of Tanks" },
-    { "wot",              "World of Tanks" },
+    {"warthunder", "War Thunder"},
+    {"gaijin", "War Thunder"},
+    {"worldoftanks", "World of Tanks"},
+    {"wot", "World of Tanks"},
 
     -- Final Fantasy
-    { "finalfantasy",     "Final Fantasy" },
-    { "ffxiv",            "Final Fantasy XIV" },
-    { "ff14",             "Final Fantasy XIV" },
-    { "ffxvi",            "Final Fantasy XVI" },
+    {"finalfantasy", "Final Fantasy"},
+    {"ffxiv", "Final Fantasy XIV"},
+    {"ff14", "Final Fantasy XIV"},
+    {"ffxvi", "Final Fantasy XVI"},
 
     -- Additional popular games
-    { "monsterhunter",    "Monster Hunter" },
-    { "residentevil",     "Resident Evil" },
-    { "pathofexile",      "Path of Exile" },
-    { "poe",              "Path of Exile" },
-    { "lostark",          "Lost Ark" },
-    { "newworld",         "New World" },
-    { "warframe",         "Warframe" },
-    { "sekiro",           "Sekiro" },
-    { "armored core",     "Armored Core VI" },
-    { "armoredcore",      "Armored Core VI" },
-    { "lies of p",        "Lies of P" },
-    { "liesofp",          "Lies of P" },
-    { "hogwarts",         "Hogwarts Legacy" },
-    { "satisfactory",     "Satisfactory" },
-    { "deeprock",         "Deep Rock Galactic" },
-    { "valheim",          "Valheim" },
-    { "no man",           "No Man's Sky" },
-    { "nomans",           "No Man's Sky" },
-    { "subnautica",       "Subnautica" },
-    { "sims",             "The Sims 4" },
-    { "lethal",           "Lethal Company" },
-    { "content warning",  "Content Warning" },
+    {"monsterhunter", "Monster Hunter"},
+    {"residentevil", "Resident Evil"},
+    {"pathofexile", "Path of Exile"},
+    {"poe", "Path of Exile"},
+    {"lostark", "Lost Ark"},
+    {"newworld", "New World"},
+    {"warframe", "Warframe"},
+    {"sekiro", "Sekiro"},
+    {"armored core", "Armored Core VI"},
+    {"armoredcore", "Armored Core VI"},
+    {"lies of p", "Lies of P"},
+    {"liesofp", "Lies of P"},
+    {"hogwarts", "Hogwarts Legacy"},
+    {"satisfactory", "Satisfactory"},
+    {"deeprock", "Deep Rock Galactic"},
+    {"valheim", "Valheim"},
+    {"no man", "No Man's Sky"},
+    {"nomans", "No Man's Sky"},
+    {"subnautica", "Subnautica"},
+    {"sims", "The Sims 4"},
+    {"lethal", "Lethal Company"},
+    {"content warning", "Content Warning"},
 
     -- Games with anti-cheat (detected via window title)
-    { "sea of thieves",   "Sea of Thieves" },
-    { "seaofthieves",     "Sea of Thieves" },
-    { "7 days",           "7 Days to Die" },
-    { "unturned",         "Unturned" },
-    { "dayz",             "DayZ" },
-    { "tarkov",           "Escape from Tarkov" },
-    { "hunt showdown",    "Hunt Showdown" },
-    { "dead by daylight", "Dead by Daylight" },
+    {"sea of thieves", "Sea of Thieves"},
+    {"seaofthieves", "Sea of Thieves"},
+    {"7 days", "7 Days to Die"},
+    {"unturned", "Unturned"},
+    {"dayz", "DayZ"},
+    {"tarkov", "Escape from Tarkov"},
+    {"hunt showdown", "Hunt Showdown"},
+    {"dead by daylight", "Dead by Daylight"},
 
     -- Racing
-    { "forza",            "Forza" },
-    { "assetto",          "Assetto Corsa" },
-    { "iracing",          "iRacing" },
-    { "beamng",           "BeamNG.drive" },
+    {"forza", "Forza"},
+    {"assetto", "Assetto Corsa"},
+    {"iracing", "iRacing"},
+    {"beamng", "BeamNG.drive"},
 
     -- Sports
-    { "fifa",             "FIFA" },
-    { "nba2k",            "NBA 2K" },
-    { "madden",           "Madden NFL" },
+    {"fifa", "FIFA"},
+    {"nba2k", "NBA 2K"},
+    {"madden", "Madden NFL"},
 
     -- Simulation
-    { "msfs",             "Microsoft Flight Simulator" },
-    { "flightsimulator",  "Microsoft Flight Simulator" },
-    { "farming",          "Farming Simulator" },
-    { "citieskylines",    "Cities Skylines" },
-    { "cities skylines",  "Cities Skylines" },
-    { "planet coaster",   "Planet Coaster" },
-    { "planetcoaster",    "Planet Coaster" },
+    {"msfs", "Microsoft Flight Simulator"},
+    {"flightsimulator", "Microsoft Flight Simulator"},
+    {"farming", "Farming Simulator"},
+    {"citieskylines", "Cities Skylines"},
+    {"cities skylines", "Cities Skylines"},
+    {"planet coaster", "Planet Coaster"},
+    {"planetcoaster", "Planet Coaster"},
 }
 
 -- ============================================================================
@@ -2612,9 +2629,9 @@ for _, v in ipairs(IGNORE_LIST) do IGNORE_SET[v] = true end
 -- Contains mode: *text* > Display Name (partial match in window title)
 -- ============================================================================
 
-local CUSTOM_NAMES_EXACT = {}    -- {["process"] = "Folder Name"} for exact matches
-local CUSTOM_NAMES_KEYWORDS = {} -- {{keywords = {"word1", "word2"}, name = "Folder"}, ...}
-local CUSTOM_NAMES_CONTAINS = {} -- {{pattern = "text", name = "Folder"}, ...} for *pattern* mode
+local CUSTOM_NAMES_EXACT = {}     -- {["process"] = "Folder Name"} for exact matches
+local CUSTOM_NAMES_KEYWORDS = {}  -- {{keywords = {"word1", "word2"}, name = "Folder"}, ...}
+local CUSTOM_NAMES_CONTAINS = {}  -- {{pattern = "text", name = "Folder"}, ...} for *pattern* mode
 
 -- Parse a single custom name entry
 -- Supports formats:
@@ -2642,9 +2659,9 @@ local function parse_custom_entry(entry)
 
     -- Check for contains mode (wrapped in *...*)
     if string.sub(path, 1, 1) == "*" and string.sub(path, -1) == "*" and #path > 2 then
-        local pattern = string.sub(path, 2, -2) -- Remove * from both ends
-        pattern = string.gsub(pattern, "^%s+", "") -- Trim leading space
-        pattern = string.gsub(pattern, "%s+$", "") -- Trim trailing space
+        local pattern = string.sub(path, 2, -2)  -- Remove * from both ends
+        pattern = string.gsub(pattern, "^%s+", "")  -- Trim leading space
+        pattern = string.gsub(pattern, "%s+$", "")  -- Trim trailing space
 
         if pattern ~= "" then
             return string.lower(pattern), name, "contains"
@@ -2655,8 +2672,8 @@ local function parse_custom_entry(entry)
 
     -- Check for keywords mode (starts with + or ~)
     if string.sub(path, 1, 1) == "+" or string.sub(path, 1, 1) == "~" then
-        local keywords_str = string.sub(path, 2)       -- Remove +/~ prefix
-        keywords_str = string.gsub(keywords_str, "^%s+", "") -- Trim leading space
+        local keywords_str = string.sub(path, 2)  -- Remove +/~ prefix
+        keywords_str = string.gsub(keywords_str, "^%s+", "")  -- Trim leading space
 
         local keywords = {}
         for word in string.gmatch(keywords_str, "%S+") do
@@ -2724,10 +2741,10 @@ local function matches_keywords(text, keywords)
     local lower = string.lower(text)
     for _, keyword in ipairs(keywords) do
         if not string.find(lower, keyword, 1, true) then
-            return false -- Missing keyword
+            return false  -- Missing keyword
         end
     end
-    return true -- All keywords found
+    return true  -- All keywords found
 end
 
 -- Check if text contains pattern (case-insensitive)
@@ -2799,10 +2816,10 @@ local last_screenshot_notify_time = 0
 local cache_raw_game = nil
 local cache_folder_name = nil
 local last_detection_time = 0
-local last_recording_time = 0 -- Separate cooldown for recordings
+local last_recording_time = 0  -- Separate cooldown for recordings
 local files_moved = 0
 local files_skipped = 0
-local script_settings = nil -- Store reference to settings for button callbacks
+local script_settings = nil  -- Store reference to settings for button callbacks
 
 -- Recording signal handler state
 local recording_signal_handler = nil
@@ -2817,10 +2834,10 @@ local new_process_name = ""
 local new_folder_name = ""
 
 -- Notification system state
-local notification_hwnd = nil      -- Current notification window handle
-local notification_hinstance = nil -- Module instance
-local notification_bg_brush = nil  -- Persistent background brush
-local notification_font = nil      -- Text font
+local notification_hwnd = nil           -- Current notification window handle
+local notification_hinstance = nil      -- Module instance
+local notification_bg_brush = nil       -- Persistent background brush
+local notification_font = nil           -- Text font
 
 -- ============================================================================
 -- LOGGING (defined early for use in notification system)
@@ -2851,7 +2868,7 @@ ffmpeg_kernel32 = nil
 
 if IS_WINDOWS and ffi then
     local load_ok = pcall(function()
-        ffi.cdef [[
+        ffi.cdef[[
             typedef unsigned long DWORD;
             typedef void* HANDLE;
             typedef void* HWND;
@@ -2995,6 +3012,30 @@ if IS_WINDOWS and ffi then
             // Shell function for fullscreen detection
             long SHQueryUserNotificationState(int* pquns);
 
+            // Window search & module handle
+            HWND FindWindowA(LPCSTR lpClassName, LPCSTR lpWindowName);
+            HINSTANCE GetModuleHandleA(LPCSTR lpModuleName);
+            int GetSystemMetrics(int nIndex);
+            UINT WinExec(LPCSTR lpCmdLine, UINT uCmdShow);
+
+            // Extended window class (used by notification system)
+            typedef struct tagWNDCLASSEXA {
+                UINT      cbSize;
+                UINT      style;
+                WNDPROC   lpfnWndProc;
+                int       cbClsExtra;
+                int       cbWndExtra;
+                HINSTANCE hInstance;
+                HICON     hIcon;
+                HCURSOR   hCursor;
+                HBRUSH    hbrBackground;
+                LPCSTR    lpszMenuName;
+                LPCSTR    lpszClassName;
+                HICON     hIconSm;
+            } WNDCLASSEXA;
+
+            ATOM RegisterClassExA(const WNDCLASSEXA* lpwcx);
+            
             // FFMpeg ShellExecute API
             typedef struct {
                 DWORD cbSize;
@@ -3051,6 +3092,7 @@ local WS_EX_NOACTIVATE = 0x08000000
 -- Other constants
 local SW_HIDE = 0
 local SW_SHOWNOACTIVATE = 4
+local SEE_MASK_NOCLOSEPROCESS = 0x00000040
 local LWA_ALPHA = 0x00000002
 local SM_CXSCREEN = 0
 local SM_CYSCREEN = 1
@@ -3149,10 +3191,10 @@ local startup_update_check_done = false
 local notification_timer_should_stop = false
 
 -- GDI Objects for rendering
-local notification_bg_brush = nil -- Global background brush
-local cached_title_font = nil     -- Cached font for title
-local cached_msg_font = nil       -- Cached font for message
-local last_font_scale = 100       -- Track scale changes to rebuild fonts
+local notification_bg_brush = nil       -- Global background brush
+local cached_title_font = nil           -- Cached font for title
+local cached_msg_font = nil             -- Cached font for message
+local last_font_scale = 100             -- Track scale changes to rebuild fonts
 
 -- Check if app is in exclusive fullscreen mode
 local function is_exclusive_fullscreen()
@@ -3181,7 +3223,7 @@ local function destroy_orphaned_notifications()
             if orphan == nil or orphan == ffi.cast("HWND", 0) then
                 break
             end
-
+            
             -- If it's NOT our current handle, kill it
             if orphan ~= notification_hwnd then
                 user32.ShowWindow(orphan, SW_HIDE)
@@ -3224,12 +3266,8 @@ local function ensure_fonts()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     -- Rebuild fonts if scale changed
     if last_font_scale ~= CONFIG.notification_scale then
-        if cached_title_font then
-            gdi32.DeleteObject(cached_title_font); cached_title_font = nil
-        end
-        if cached_msg_font then
-            gdi32.DeleteObject(cached_msg_font); cached_msg_font = nil
-        end
+        if cached_title_font then gdi32.DeleteObject(cached_title_font); cached_title_font = nil end
+        if cached_msg_font then gdi32.DeleteObject(cached_msg_font); cached_msg_font = nil end
         last_font_scale = CONFIG.notification_scale
     end
 
@@ -3267,7 +3305,7 @@ local function draw_notification_to_hdc(hdc, hwnd)
 
     local accent_brush = gdi32.CreateSolidBrush(COLOR_ACCENT)
     if accent_brush ~= nil then
-        local accent_rect = ffi.new("RECT", { 0, 0, 4, rect.bottom })
+        local accent_rect = ffi.new("RECT", {0, 0, 4, rect.bottom})
         user32.FillRect(hdc, accent_rect, accent_brush)
         gdi32.DeleteObject(accent_brush)
     end
@@ -3288,12 +3326,11 @@ local function draw_notification_to_hdc(hdc, hwnd)
     local title_x = math.floor(12 * scale_factor)
     local title_y = math.floor(10 * scale_factor)
     local title_h = math.floor(30 * scale_factor)
-
+    
     -- DT_CENTER (1) + DT_VCENTER (4) + DT_SINGLELINE (32) = 37
-    local text_flags = 37
-
-    local title_rect = ffi.new("RECT",
-        { title_x, title_y, rect.right - math.floor(10 * scale_factor), title_y + title_h })
+    local text_flags = 37 
+    
+    local title_rect = ffi.new("RECT", {title_x, title_y, rect.right - math.floor(10 * scale_factor), title_y + title_h})
     local title_wide = utf8_to_wide(safe_title)
     if title_wide then
         user32.DrawTextW(hdc, title_wide, -1, title_rect, text_flags)
@@ -3308,9 +3345,7 @@ local function draw_notification_to_hdc(hdc, hwnd)
         local safe_message = notification_message or ""
 
         local msg_y = math.floor(34 * scale_factor)
-        local msg_rect = ffi.new("RECT",
-            { math.floor(12 * scale_factor), msg_y, rect.right - math.floor(10 * scale_factor), rect.bottom -
-            math.floor(8 * scale_factor) })
+        local msg_rect = ffi.new("RECT", {math.floor(12 * scale_factor), msg_y, rect.right - math.floor(10 * scale_factor), rect.bottom - math.floor(8 * scale_factor)})
         local msg_wide = utf8_to_wide(safe_message)
         if msg_wide then
             user32.DrawTextW(hdc, msg_wide, -1, msg_rect, text_flags)
@@ -3468,11 +3503,13 @@ local function notification_timer_callback()
                 user32.ShowWindow(notification_hwnd, SW_SHOWNOACTIVATE)
                 notification_window_shown = true
             end
+
         elseif notification_fade_state == "visible" then
             if os.time() >= notification_end_time then
                 notification_fade_state = "out"
             end
             -- Efficiency: No redraw needed while static
+
         elseif notification_fade_state == "out" then
             notification_alpha = notification_alpha - FADE_STEP
             if notification_alpha <= 0 then
@@ -3533,8 +3570,6 @@ end
 
 -- Show notification popup
 local function show_notification(title, message)
-    if not CONFIG.show_notifications then return end
-
     if not VISUAL_NOTIFICATIONS_SUPPORTED then
         if not IS_WINDOWS and command_exists("notify-send") then
             local timeout_ms = math.max(1000, math.floor((CONFIG.notification_duration or 3.0) * 1000))
@@ -3611,16 +3646,16 @@ local function show_notification(title, message)
             end
             dbg("New notification window created (Reuse initialized) at scale " .. CONFIG.notification_scale .. "%")
         else
-            -- If scale changes but window is reused, we might need to recreate it.
-            -- But for now, we assume users won't change scale mid-session often.
+            -- If scale changes but window is reused, we might need to recreate it. 
+            -- But for now, we assume users won't change scale mid-session often. 
             -- To be safe, we could destroy and recreate if size differs, but reuse is prioritized for stability.
             -- If needed, user can reload script to force resize.
             dbg("Reusing existing notification window")
-
+            
             -- Optional: Position update if resolution changed or scale changed
             local scale_factor = CONFIG.notification_scale / 100.0
             local x, y, scaled_width, scaled_height = get_notification_position(scale_factor)
-
+            
             user32.SetWindowPos(notification_hwnd, nil, x, y, scaled_width, scaled_height, 0x0010 + 0x0004) -- SWP_NOACTIVATE + SWP_NOZORDER
         end
 
@@ -3672,7 +3707,7 @@ local function play_notification_sound()
             if CONFIG.use_quiet_sound then
                 sound_file = "notification_sound_silent.wav"
             end
-
+            
             local full_path = SCRIPT_DIR .. sound_file
             local result = winmm.PlaySoundA(full_path, nil, SND_FILENAME + SND_ASYNC + SND_NODEFAULT)
             if result ~= 0 then
@@ -3758,7 +3793,7 @@ local function cleanup_notifications()
     notification_end_time = 0
     notification_title = ""
     notification_message = ""
-    notification_hwnd = nil -- Explicitly reset handle
+    notification_hwnd = nil  -- Explicitly reset handle
 end
 
 -- ============================================================================
@@ -3912,9 +3947,9 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
 
         -- SAFETY CHECK: Skip if window title looks like a file explorer
         if string.find(lower_title, ":\\", 1, true) or
-            string.find(lower_title, ":/", 1, true) or
-            string.find(lower_title, "file explorer", 1, true) or
-            string.find(lower_title, "explorer", 1, true) then
+           string.find(lower_title, ":/", 1, true) or
+           string.find(lower_title, "file explorer", 1, true) or
+           string.find(lower_title, "explorer", 1, true) then
             dbg("Window title looks like file explorer, using fallback")
             return CONFIG.fallback_folder
         end
@@ -3990,7 +4025,7 @@ local function get_active_process()
         local get_ok, len = pcall(function()
             return psapi.GetModuleBaseNameA(process, nil, buffer, 260)
         end)
-
+        
         -- Safe close for first attempt
         kernel32.CloseHandle(process)
 
@@ -4000,14 +4035,14 @@ local function get_active_process()
             local name = ffi.string(buffer, len)
             return string.gsub(name, "%.[eE][xX][eE]$", "")
         end
-
+        
         -- FALLBACK: Try QueryFullProcessImageNameA with PROCESS_QUERY_LIMITED_INFORMATION
         -- This is needed for games with stricter anti-cheat (ARC Raiders, THE FINALS, etc.)
         -- that block PROCESS_VM_READ
-
+        
         local process_fallback = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid[0])
         if is_invalid_handle(process_fallback) then return nil end
-
+        
         local fallback_ok, fallback_result = pcall(function()
             local size = ffi.new("DWORD[1]", 260)
             local res = kernel32.QueryFullProcessImageNameA(process_fallback, 0, buffer, size)
@@ -4019,9 +4054,9 @@ local function get_active_process()
             end
             return nil
         end)
-
+        
         kernel32.CloseHandle(process_fallback)
-
+        
         return fallback_ok and fallback_result or nil
     end)
 
@@ -4040,8 +4075,7 @@ local function wide_to_utf8(wide_buffer, wide_len)
         if size_needed <= 0 or size_needed > MAX_UTF8_BUFFER then return nil end
 
         local utf8_buffer = ffi.new("char[?]", size_needed + 1)
-        local conv_result = kernel32.WideCharToMultiByte(CP_UTF8, 0, wide_buffer, wide_len, utf8_buffer, size_needed, nil,
-            nil)
+        local conv_result = kernel32.WideCharToMultiByte(CP_UTF8, 0, wide_buffer, wide_len, utf8_buffer, size_needed, nil, nil)
 
         if conv_result > 0 then
             return ffi.string(utf8_buffer, conv_result)
@@ -4081,20 +4115,20 @@ local normalize_detected_process_name
 
 function is_generic_steam_app_identifier(value)
     if not value or value == "" then return false end
-    return string.match(string.lower(tostring(value)), "^steam_app_%d+([.]desktop)?$") ~= nil
+    local lower = string.lower(tostring(value))
+    local base = lower:gsub("%.desktop$", "")
+    return string.match(base, "^steam_app_%d+$") ~= nil
 end
 
 function get_active_kwin_window_info()
     if IS_WINDOWS or os.getenv("XDG_CURRENT_DESKTOP") ~= "KDE" or not command_exists("gdbus") then return nil, nil end
-    local output = capture_command_output(
-        "gdbus call --session --dest org.kde.KWin --object-path /KWin --method org.kde.KWin.queryWindowInfo")
+    local output = capture_command_output("gdbus call --session --dest org.kde.KWin --object-path /KWin --method org.kde.KWin.queryWindowInfo")
     if not output then return nil, nil end
     local caption = extract_quoted_value(output, "caption")
     local resource_class = extract_quoted_value(output, "resourceClass")
     local resource_name = extract_quoted_value(output, "resourceName")
     local desktop_file = extract_quoted_value(output, "desktopFile")
-    local process = normalize_detected_process_name(resource_class) or normalize_detected_process_name(resource_name) or
-        normalize_detected_process_name(desktop_file)
+    local process = normalize_detected_process_name(resource_class) or normalize_detected_process_name(resource_name) or normalize_detected_process_name(desktop_file)
     return process, caption
 end
 
@@ -4106,8 +4140,7 @@ function get_active_x11_window_info()
     if not window_id or window_id == "0x0" then return nil, nil end
     local props = capture_command_output("xprop -id " .. window_id .. " WM_CLASS _NET_WM_NAME WM_NAME")
     if not props then return nil, nil end
-    local title = string.match(props, '_NET_WM_NAME%([^%)]*%) = "([^"]+)"') or
-        string.match(props, 'WM_NAME%([^%)]*%) = "([^"]+)"')
+    local title = string.match(props, '_NET_WM_NAME%([^%)]*%) = "([^"]+)"') or string.match(props, 'WM_NAME%([^%)]*%) = "([^"]+)"')
     local class_a, class_b = string.match(props, 'WM_CLASS%([^%)]*%) = "([^"]+)", "([^"]+)"')
     local process = normalize_detected_process_name(class_b) or normalize_detected_process_name(class_a)
     return process, title
@@ -4161,15 +4194,7 @@ end
 
 function is_portable_obs_source(source_id)
     if not source_id or source_id == "" then return false end
-    local types = {
-        game_capture = true,
-        window_capture = true,
-        xcomposite_input = true,
-        ["pipewire-window-capture-source"] = true,
-        ["pipewire-desktop-capture-source"] = true,
-        screen_capture = true,
-        xshm_input = true
-    }
+    local types = {game_capture=true, window_capture=true, xcomposite_input=true, ["pipewire-window-capture-source"]=true, ["pipewire-desktop-capture-source"]=true, screen_capture=true, xshm_input=true}
     return types[source_id] or false
 end
 
@@ -4187,7 +4212,7 @@ local function find_game_in_obs()
                 if settings then
                     local window = obs.obs_data_get_string(settings, "window")
                     if not window or window == "" then window = obs.obs_data_get_string(settings, "title") end
-
+                    
                     if window and window ~= "" then
                         if not found_window then found_window = window end
                         local exe = get_obs_process_candidate(window)
@@ -4204,6 +4229,7 @@ local function find_game_in_obs()
         obs.source_list_release(sources)
         return found, found_window
     end)
+    if not ok then return nil, nil end
     return result, result_window
 end
 
@@ -4224,7 +4250,7 @@ local function get_background_game()
         repeat
             local exe_file = ffi.string(pe32.szExeFile)
             local name = string.gsub(exe_file, "%.[eE][xX][eE]$", ""):lower()
-
+            
             if not is_ignored(name) and GAME_DATABASE and GAME_DATABASE[name] then
                 dbg("Background game found via process snapshot: " .. name)
                 kernel32.CloseHandle(snapshot)
@@ -4246,7 +4272,7 @@ local function detect_game()
         local linux_process, linux_title = get_active_linux_window_info()
         if linux_process and is_ignored(linux_process) then return nil, linux_title, true end
         if linux_process or linux_title then return linux_process, linux_title, false end
-
+        
         local obs_game, obs_window = find_game_in_obs()
         if obs_game and not is_ignored(obs_game) then return obs_game, obs_window, false end
         if obs_window and obs_window ~= "" then return nil, obs_window, false end
@@ -4307,10 +4333,7 @@ local function get_existing_folder(root, name)
 end
 
 local function delete_file(path)
-    if not WINDOWS_FFI_AVAILABLE then
-        os.remove(path)
-        return
-    end
+    if not WINDOWS_FFI_AVAILABLE then os.remove(path) return end
     local ok, err = pcall(function()
         path = string.gsub(path, "/", "\\")
         local len = kernel32.MultiByteToWideChar(CP_UTF8, 0, path, -1, nil, 0)
@@ -4380,14 +4403,8 @@ local function is_video_file(path)
     if not path then return false end
     local ext = string.lower(string.match(path, "%.([^.]+)$") or "")
     local video_exts = {
-        ["mp4"] = true,
-        ["mkv"] = true,
-        ["mov"] = true,
-        ["flv"] = true,
-        ["ts"] = true,
-        ["m3u8"] = true,
-        ["avi"] = true,
-        ["webm"] = true
+        ["mp4"] = true, ["mkv"] = true, ["mov"] = true, ["flv"] = true,
+        ["ts"] = true, ["m3u8"] = true, ["avi"] = true, ["webm"] = true
     }
     return video_exts[ext] or false
 end
@@ -4399,7 +4416,6 @@ local function run_task_sync_hidden(commands, unique_id)
         end
         return true
     end
-    local temp_dir = os.getenv("TEMP") or os.getenv("TMP") or "C:\\Temp"
     local bat_path = join_path(TEMP_DIR, "srm_sync_" .. unique_id .. ".bat")
 
     local f_bat = io.open(bat_path, "w")
@@ -4407,11 +4423,11 @@ local function run_task_sync_hidden(commands, unique_id)
         log("ERROR: Could not create temp batch file")
         return false
     end
-
+    
     f_bat:write("@echo off\n")
     -- chcp 65001 is critical for non-English filenames
     f_bat:write("chcp 65001 > nul\n")
-
+    
     for _, cmd in ipairs(commands) do
         f_bat:write(cmd .. "\n")
         f_bat:write("if %errorlevel% neq 0 exit /b %errorlevel%\n")
@@ -4435,12 +4451,12 @@ local function run_task_sync_hidden(commands, unique_id)
         -- Wait for finish (Blocking)
         if sei.hProcess ~= nil then
             -- SAFETY: INFINITE wait required for large video files (embedding can take minutes)
-            -- WARNING: This will block OBS UI during the operation!
+            -- WARNING: This will block OBS UI during the operation! 
             -- This is expected behavior for a synchronous operation to ensure file integrity.
             kernel32.WaitForSingleObject(sei.hProcess, 0xFFFFFFFF)
             kernel32.CloseHandle(sei.hProcess)
         end
-
+        
         -- Cleanup
         os.remove(bat_path)
         return true
@@ -4460,82 +4476,74 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
         if not string.match(lower_path, "%.exe$") then
             local try_bin = ffmpeg_path .. "/ffmpeg.exe"
             local try_bin_sub = ffmpeg_path .. "/bin/ffmpeg.exe"
-            if obs.os_file_exists(try_bin) then
-                ffmpeg_path = try_bin
-            elseif obs.os_file_exists(try_bin_sub) then
-                ffmpeg_path = try_bin_sub
-            end
+            if obs.os_file_exists(try_bin) then ffmpeg_path = try_bin
+            elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub end
         end
     else
         if not string.match(lower_path, "/ffmpeg$") and not string.match(lower_path, "^ffmpeg$") then
             local try_bin = ffmpeg_path .. "/ffmpeg"
             local try_bin_sub = ffmpeg_path .. "/bin/ffmpeg"
-            if obs.os_file_exists(try_bin) then
-                ffmpeg_path = try_bin
-            elseif obs.os_file_exists(try_bin_sub) then
-                ffmpeg_path = try_bin_sub
-            end
+            if obs.os_file_exists(try_bin) then ffmpeg_path = try_bin
+            elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub end
         end
     end
 
     math.randomseed(os.time() + (os.clock() * 1000))
     local unique_id = tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
     local temp_thumb = src .. "." .. unique_id .. ".thumb.jpg"
-
+    
     local commands = {}
-
+    
     table.insert(commands, string.format('"%s" -sseof -%.1f -i "%s" -vframes 1 -q:v 2 -y "%s"',
         ffmpeg_path, offset, src, temp_thumb))
-
+        
     -- Embed and Move
     -- Logic depends on container type:
     -- MKV supports "Attachments" (Best for Cover Art support in Windows/Icaros)
     -- MP4 requires "Video Stream" with Disposition (Apple/Standard style)
-
+    
     local is_mkv = string.match(string.lower(src), "%.mkv$") ~= nil
     local cmd_embed = ""
-
+    
     if is_mkv then
         -- MKV Strategy: Use -attach for true Matroska attachments
         -- -c copy: Copy video/audio streams
         -- -attach: Attach the thumbnail file
         -- -metadata:s:t:0 mimetype: Set MIME type for the FIRST attachment stream explicitly
         -- -metadata:s:t:0 filename: Naming it "cover.jpg" or "cover.png" helps detection
-        cmd_embed = string.format(
-            '"%s" -i "%s" -map 0 -c copy -attach "%s" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename="cover.jpg" -y "%s"',
+        cmd_embed = string.format('"%s" -i "%s" -map 0 -c copy -attach "%s" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename="cover.jpg" -y "%s"',
             ffmpeg_path, src, temp_thumb, target)
     else
         -- MP4/Other Strategy: Use stream mapping
-        cmd_embed = string.format(
-            '"%s" -i "%s" -i "%s" -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title="Cover Art" -y "%s"',
+        cmd_embed = string.format('"%s" -i "%s" -i "%s" -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title="Cover Art" -y "%s"',
             ffmpeg_path, src, temp_thumb, target)
     end
-
+        
     table.insert(commands, cmd_embed)
-
+    
     -- Sync Logic: We manage files in Lua now because we WAIT for completion
     -- No "del" commands in batch needed for result files, only temps
-
+    
     dbg("Processing Thumbnail (Sync): " .. unique_id)
-
+    
     -- Run it!
     run_task_sync_hidden(commands, unique_id)
-
+    
     -- Cleanup temp thumb
     os.remove(temp_thumb)
-
+    
     -- Validation (Now safe because process is guaranteed finished)
     if obs.os_file_exists(target) then
         local src_size = get_file_size(src)
         local target_size = get_file_size(target)
-
+        
         -- If target is valid (not empty and reasonable size)
         if target_size > (src_size * 0.9) then
             return true
         end
     end
-
-    return false
+    
+    return false 
 end
 
 local function move_file(src, folder_name, game_name)
@@ -4568,8 +4576,7 @@ local function move_file(src, folder_name, game_name)
             dbg("No-folder mode active, keeping file in output root")
             local new_filename = filename
             -- Still add prefix if enabled and game_name is meaningful
-            local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and
-                (game_name ~= "." and game_name ~= "/" and game_name ~= "\\") and game_name ~= CONFIG.fallback_folder
+            local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and (game_name ~= "." and game_name ~= "/" and game_name ~= "\\") and game_name ~= CONFIG.fallback_folder
             if should_add_prefix then
                 local safe_game = clean_filename(game_name)
                 new_filename = safe_game .. " - " .. filename
@@ -4593,13 +4600,13 @@ local function move_file(src, folder_name, game_name)
 
         local safe_folder = clean_folder_path(folder_name)
         local real_folder = safe_folder
-
+        
         -- If safe_folder contains separators (nested folder), skip fuzzy existing check
         -- Otherwise (simple folder), try to find existing folder with matching case (e.g. "game" -> "Game")
         if not string.find(safe_folder, "[/\\]") then
             real_folder = get_existing_folder(dir, safe_folder)
         end
-
+        
         local target_dir = dir .. "/" .. real_folder
 
         if CONFIG.use_date_subfolders then
@@ -4607,13 +4614,12 @@ local function move_file(src, folder_name, game_name)
         end
 
         local new_filename = filename
-        local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and
-            game_name ~= CONFIG.fallback_folder
+        local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and game_name ~= CONFIG.fallback_folder
 
         dbg("Prefix check: add_game_prefix=" .. tostring(CONFIG.add_game_prefix) ..
-            ", game_name=" .. tostring(game_name) ..
-            ", fallback=" .. tostring(CONFIG.fallback_folder) ..
-            ", will_add=" .. tostring(should_add_prefix))
+              ", game_name=" .. tostring(game_name) ..
+              ", fallback=" .. tostring(CONFIG.fallback_folder) ..
+              ", will_add=" .. tostring(should_add_prefix))
 
         if should_add_prefix then
             -- For nested paths (e.g., "Singleplayer/DS3"), use only the last segment as prefix
@@ -4664,10 +4670,10 @@ local function move_file(src, folder_name, game_name)
                 log("Thumbnail embedded successfully!")
                 log("Moved (FFmpeg): " .. new_filename)
                 log("To: " .. target_dir)
-
+                
                 -- Delete original source file since FFmpeg created a new one
                 os.remove(src)
-
+                
                 files_moved = files_moved + 1
                 return true
             else
@@ -4896,7 +4902,7 @@ local function start_buffer_delayed()
     obs.timer_remove(start_buffer_delayed)
     obs.obs_frontend_replay_buffer_start()
     dbg("Replay Buffer auto-restarted")
-end
+end 
 
 -- Auto-start replay buffer on OBS launch (5s delay for full initialization)
 local function auto_start_buffer_on_load()
@@ -4944,7 +4950,7 @@ local function on_event(event)
                 process_file_with_game(path, folder_name, raw_game)
 
                 notify("Clip Saved", "Moved to: " .. folder_name)
-
+                
                 -- Auto-restart buffer logic (Prevent Overlap)
                 if CONFIG.restart_buffer_after_save then
                     restarting_buffer_active = true
@@ -4952,6 +4958,7 @@ local function on_event(event)
                     dbg("Auto-restart: Buffer stopping...")
                 end
             end
+
         elseif event == obs.OBS_FRONTEND_EVENT_SCREENSHOT_TAKEN then
             if CONFIG.organize_screenshots then
                 local now = os.clock()
@@ -4987,6 +4994,8 @@ local function on_event(event)
                     last_screenshot_time = now
                 end
             end
+
+
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTING then
             if CONFIG.organize_recordings then
                 local raw_game, window_title, skip_fallback = detect_game()
@@ -5000,6 +5009,7 @@ local function on_event(event)
                     log("Recording starting - No game detected, using: " .. recording_folder_name)
                 end
             end
+
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTED then
             if CONFIG.organize_recordings then
                 -- SAFETY: Delay initialization by 0.5s to prevent crash in graphics thread
@@ -5007,12 +5017,14 @@ local function on_event(event)
                 obs.timer_add(delayed_recording_init, 500)
                 log("Recording started - initialization scheduled in 0.5s...")
             end
+
         elseif event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED then
             if restarting_buffer_active then
                 restarting_buffer_active = false
                 dbg("Auto-restart: Buffer stop confirmed. Restarting in 200ms...")
                 obs.timer_add(start_buffer_delayed, 200)
             end
+            
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
             if CONFIG.organize_recordings then
                 obs.timer_remove(delayed_recording_init)
@@ -5317,7 +5329,7 @@ local function compare_versions(new, old)
     local old_m, old_n, old_p = old:match("(%d+)%.(%d+)%.?(%d*)")
     new_m, new_n, new_p = tonumber(new_m or 0), tonumber(new_n or 0), tonumber(new_p or 0)
     old_m, old_n, old_p = tonumber(old_m or 0), tonumber(old_n or 0), tonumber(old_p or 0)
-
+    
     if new_m > old_m then return true end
     if new_m < old_m then return false end
     if new_n > old_n then return true end
@@ -5358,25 +5370,25 @@ end
 -- Parse result of startup auto-update check
 local function parse_startup_update_result()
     obs.timer_remove(parse_startup_update_result)
-
+    
     local file = io.open(GITHUB_VERSION_FILE, "r")
     if not file then
         startup_update_status = "⚠️ Update check failed"
         startup_update_check_done = true
         return
     end
-
+    
     local content = file:read("*a")
     file:close()
     pcall(os.remove, GITHUB_VERSION_FILE)
-
+    
     if not content or not content:match("^-- Smart Replay Mover") then
         startup_update_status = "⚠️ Update check failed"
     else
         local latest_version = content:match("Smart Replay Mover v?(%d+%.%d+%.?[%d]*)")
         if latest_version then
             latest_version = latest_version:gsub("^%s*(.-)%s*$", "%1")
-
+            
             if latest_version == VERSION then
                 startup_update_status = "✅ Up to date (v" .. VERSION .. ")"
             elseif compare_versions(latest_version, VERSION) then
@@ -5388,10 +5400,10 @@ local function parse_startup_update_result()
             startup_update_status = "⚠️ Parse error"
         end
     end
-
+    
     startup_update_check_done = true
     log("Update Check: " .. startup_update_status)
-
+    
     -- Trigger UI refresh by toggling hidden property
     if script_settings then
         local current = obs.obs_data_get_bool(script_settings, "__startup_refresh")
@@ -5419,14 +5431,14 @@ local function parse_update_result()
         content = file:read("*a")
         file:close()
     end)
-
+    
     if not read_ok then
         update_status_msg = "❌ Check failed: Read error"
         obs.timer_remove(parse_update_result)
         dbg("Failed to read update file: " .. tostring(read_err))
         return
     end
-
+    
     -- The temporary file should be cleaned up immediately after reading.
     pcall(os.remove, GITHUB_VERSION_FILE)
 
@@ -5442,11 +5454,11 @@ local function parse_update_result()
         -- Try to find the version number in the downloaded script content.
         local latest_version = content:match("Smart Replay Mover v?(%d+%.%d+%.?[%d]*)")
         if not latest_version then latest_version = content:match("v(%d+%.%d+%.%d+)") end
-
+        
         if latest_version then
             -- (Version check logic follows)
             latest_version = latest_version:gsub("^%s*(.-)%s*$", "%1")
-
+            
             -- Compare the latest version from GitHub with the current script version.
             if latest_version == VERSION then
                 update_status_msg = "✅ You are up to date (v" .. VERSION .. ")"
@@ -5465,18 +5477,17 @@ local function parse_update_result()
 
     -- Stop the timer and update the status in the UI.
     obs.timer_remove(parse_update_result)
-
+    
     if script_settings then
         obs.obs_data_set_string(script_settings, "check_updates_status", update_status_msg)
     end
-
+    
     log("Update Check Result: " .. update_status_msg)
 
     -- Toggle the hidden boolean property to trigger the modified callback,
     -- which returns true and forces a UI refresh.
     if script_settings then
-        obs.obs_data_set_bool(script_settings, "__ui_refresh_trigger",
-            not obs.obs_data_get_bool(script_settings, "__ui_refresh_trigger"))
+        obs.obs_data_set_bool(script_settings, "__ui_refresh_trigger", not obs.obs_data_get_bool(script_settings, "__ui_refresh_trigger"))
     end
 end
 
@@ -5493,13 +5504,13 @@ local function refresh_update_status(props, p)
     if update_prop then
         obs.obs_property_set_description(update_prop, startup_update_status)
     end
-
+    
     -- Show/hide the download button based on whether update is available
     local link_prop = obs.obs_properties_get(props, "open_releases_btn")
     if link_prop then
         obs.obs_property_set_visible(link_prop, startup_update_status:match("🆕") ~= nil)
     end
-
+    
     return true
 end
 
@@ -5513,18 +5524,18 @@ local function open_releases_url(props, p)
 end
 
 local function check_for_updates(props, p)
-    if update_check_in_progress then
-        -- If a check is running, a second click should just refresh the UI.
-        -- This will show the final result from the completed check.
-        update_check_in_progress = false
-        button_text = "                  🔄  Check for Updates                  "
-        return true
-    end
+	if update_check_in_progress then
+		-- If a check is running, a second click should just refresh the UI.
+		-- This will show the final result from the completed check.
+		update_check_in_progress = false
+		button_text = "                  🔄  Check for Updates                  "
+		return true
+	end
 
-    -- Start a new check
-    update_check_in_progress = true
-    button_text = "           ⏳ Checking... (Click again in 5s)           "
-    update_status_msg = "⏳ Connecting to GitHub..." -- Show status immediately
+	-- Start a new check
+	update_check_in_progress = true
+	button_text = "           ⏳ Checking... (Click again in 5s)           "
+	update_status_msg = "⏳ Connecting to GitHub..." -- Show status immediately
 
     -- Force UI refresh by toggling a dummy setting
     if script_settings then
@@ -5532,24 +5543,23 @@ local function check_for_updates(props, p)
         obs.obs_data_set_bool(script_settings, "__ui_refresh_trigger", not dummy)
     end
 
-    if kernel32 then
-        if obs.os_file_exists(GITHUB_VERSION_FILE) then
-            os.remove(GITHUB_VERSION_FILE)
-        end
-        math.randomseed(os.time())
-        local cache_buster = "?t=" .. tostring(os.time()) .. tostring(math.random(1000, 9999))
-        local url_to_fetch = GITHUB_RAW_URL .. cache_buster
-        local cmd = string.format('powershell -Command "Invoke-WebRequest -Uri \'%s\' -OutFile \'%s\'"', url_to_fetch,
-            GITHUB_VERSION_FILE)
-        kernel32.WinExec(cmd, 0)
-        obs.timer_add(parse_update_result, 4000) -- Increased to 4s
-    else
-        update_status_msg = "❌ Error: kernel32 missing"
-        update_check_in_progress = false
-        button_text = "                  🔄  Check for Updates                  "
-    end
+	if kernel32 then
+		if obs.os_file_exists(GITHUB_VERSION_FILE) then
+			os.remove(GITHUB_VERSION_FILE)
+		end
+		math.randomseed(os.time())
+		local cache_buster = "?t=" .. tostring(os.time()) .. tostring(math.random(1000, 9999))
+		local url_to_fetch = GITHUB_RAW_URL .. cache_buster
+		local cmd = string.format('powershell -Command "Invoke-WebRequest -Uri \'%s\' -OutFile \'%s\'"', url_to_fetch, GITHUB_VERSION_FILE)
+		kernel32.WinExec(cmd, 0)
+		obs.timer_add(parse_update_result, 4000) -- Increased to 4s
+	else
+		update_status_msg = "❌ Error: kernel32 missing"
+		update_check_in_progress = false
+		button_text = "                  🔄  Check for Updates                  "
+	end
 
-    return true -- Force UI refresh to show the "Checking..." text on the button
+	return true -- Force UI refresh to show the "Checking..." text on the button
 end
 
 function script_properties()
@@ -5557,43 +5567,15 @@ function script_properties()
 
     -- UPDATE STATUS (FIRST ELEMENT - shown at top of UI)
     obs.obs_properties_add_text(props, "update_info", startup_update_status, obs.OBS_TEXT_INFO)
-
+    
     -- Download button - opens releases page in browser (hidden until update available)
     local download_btn = obs.obs_properties_add_button(props, "open_releases_btn", "📥 Download Update", open_releases_url)
     obs.obs_property_set_visible(download_btn, startup_update_status:match("🆕") ~= nil)
-
+    
     -- Refresh button - clicking updates the status display
     obs.obs_properties_add_button(props, "refresh_status_btn", "🔄 Refresh Status", refresh_update_status)
     obs.obs_properties_add_text(props, "refresh_hint", "Click after ~4 seconds to see update status", obs.OBS_TEXT_INFO)
 
-    -- OS MODE SELECTOR
-    local os_list = obs.obs_properties_add_list(props, "os_mode",
-        "🖥️  Operating System Mode",
-        obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
-    obs.obs_property_list_add_string(os_list, "Auto-Detect", "auto")
-    obs.obs_property_list_add_string(os_list, "Windows", "windows")
-    obs.obs_property_list_add_string(os_list, "Linux", "linux")
-
-    obs.obs_property_set_modified_callback(os_list, function(props, prop, settings)
-        local mode = obs.obs_data_get_string(settings, "os_mode")
-        local is_win = IS_WINDOWS_REAL
-        if mode == "windows" then
-            is_win = true
-        elseif mode == "linux" then
-            is_win = false
-        end
-
-        -- Hide Windows-only properties when in Linux mode
-        local vis_scan = obs.obs_properties_get(props, "scan_all_processes")
-        local vis_scale = obs.obs_properties_get(props, "notification_scale")
-        local vis_pos = obs.obs_properties_get(props, "notification_position")
-        local vis_scan_help = obs.obs_properties_get(props, "scan_all_processes_help")
-        if vis_scan then obs.obs_property_set_visible(vis_scan, is_win) end
-        if vis_scale then obs.obs_property_set_visible(vis_scale, is_win) end
-        if vis_pos then obs.obs_property_set_visible(vis_pos, is_win) end
-        if vis_scan_help then obs.obs_property_set_visible(vis_scan_help, is_win) end
-        return true
-    end)
 
     -- FILE NAMING GROUP
     local naming_group = obs.obs_properties_create()
@@ -5603,34 +5585,25 @@ function script_properties()
 
     -- CUSTOM NAMES GROUP
     local custom_group = obs.obs_properties_create()
-    obs.obs_properties_add_text(custom_group, "custom_names_help",
-        "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder | game > / or . (no folder)",
-        obs.OBS_TEXT_INFO)
-    obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)",
-        obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(custom_group, "custom_names_help", "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder | game > / or . (no folder)", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_text(custom_group, "new_folder_name", "📁  Folder name", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_button(custom_group, "add_mapping_btn", "➕  Add", add_custom_mapping)
-    obs.obs_properties_add_editable_list(custom_group, "custom_names", "Your mappings", obs
-        .OBS_EDITABLE_LIST_TYPE_STRINGS, nil, nil)
-    obs.obs_properties_add_group(props, "custom_section", "🎮  CUSTOM NAMES (Highest Priority)", obs.OBS_GROUP_NORMAL,
-        custom_group)
+    obs.obs_properties_add_editable_list(custom_group, "custom_names", "Your mappings", obs.OBS_EDITABLE_LIST_TYPE_STRINGS, nil, nil)
+    obs.obs_properties_add_group(props, "custom_section", "🎮  CUSTOM NAMES (Highest Priority)", obs.OBS_GROUP_NORMAL, custom_group)
 
     -- BACKUP GROUP
     local backup_group = obs.obs_properties_create()
-    obs.obs_properties_add_path(backup_group, "import_export_path", "📄  File path (optional)", obs.OBS_PATH_FILE_SAVE,
-        "Text files (*.txt)", nil)
+    obs.obs_properties_add_path(backup_group, "import_export_path", "📄  File path (optional)", obs.OBS_PATH_FILE_SAVE, "Text files (*.txt)", nil)
     obs.obs_properties_add_button(backup_group, "import_btn", "📥  Import", on_import_clicked)
     obs.obs_properties_add_button(backup_group, "export_btn", "📤  Export", on_export_clicked)
     obs.obs_properties_add_group(props, "backup_section", "💾  BACKUP", obs.OBS_GROUP_NORMAL, backup_group)
 
     -- BUFFER CONTROL GROUP
     local buffer_group = obs.obs_properties_create()
-    obs.obs_properties_add_bool(buffer_group, "restart_buffer_after_save",
-        "🔄  Auto-restart Replay Buffer after save (Prevent Overlap)")
+    obs.obs_properties_add_bool(buffer_group, "restart_buffer_after_save", "🔄  Auto-restart Replay Buffer after save (Prevent Overlap)")
     obs.obs_properties_add_bool(buffer_group, "auto_start_buffer", "▶️  Auto-start Replay Buffer on OBS launch")
-    obs.obs_properties_add_text(buffer_group, "smart_save_help",
-        "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!",
-        obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(buffer_group, "smart_save_help", "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "buffer_section", "🔄  BUFFER CONTROL", obs.OBS_GROUP_NORMAL, buffer_group)
 
     -- ORGANIZATION GROUP
@@ -5639,60 +5612,115 @@ function script_properties()
     obs.obs_properties_add_bool(folder_group, "organize_screenshots", "📸  Also organize screenshots")
     obs.obs_properties_add_bool(folder_group, "organize_recordings", "🎬  Organize recordings (Start/Stop Recording)")
     obs.obs_properties_add_bool(folder_group, "scan_all_processes", "🔍  Detect game by scanning all running processes")
-    obs.obs_properties_add_text(folder_group, "scan_all_processes_help",
-        "Detects background games when focused on Discord or Desktop (acts as a smart fallback).", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(folder_group, "scan_all_processes_help", "Detects background games when focused on Discord or Desktop (acts as a smart fallback).", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "folder_section", "🗂️  ORGANIZATION", obs.OBS_GROUP_NORMAL, folder_group)
 
     -- SPAM PROTECTION GROUP
     local spam_group = obs.obs_properties_create()
-    obs.obs_properties_add_float_slider(spam_group, "duplicate_cooldown", "⏱️  Cooldown between saves (seconds)", 0, 30,
-        0.5)
+    obs.obs_properties_add_float_slider(spam_group, "duplicate_cooldown", "⏱️  Cooldown between saves (seconds)", 0, 30, 0.5)
     obs.obs_properties_add_bool(spam_group, "delete_spam_files", "🗑️  Auto-delete duplicate files")
     obs.obs_properties_add_group(props, "spam_section", "🛡️  SPAM PROTECTION", obs.OBS_GROUP_NORMAL, spam_group)
 
     -- NOTIFICATIONS GROUP
     local notify_group = obs.obs_properties_create()
-    obs.obs_properties_add_text(notify_group, "notify_help", "Visual popup works only in Borderless Windowed games!",
-        obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(notify_group, "notify_help", "Visual popup works only in Borderless Windowed games!", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_bool(notify_group, "show_notifications", "🖼️  Show visual popup (Borderless Windowed only)")
     obs.obs_properties_add_bool(notify_group, "play_sound", "🔊  Play notification sound (works in Fullscreen too)")
-
-    local p_scale = obs.obs_properties_add_float_slider(notify_group, "notification_scale", "📏  Scale %", 100.0, 300.0,
-        10.0)
-
-    local p_pos = obs.obs_properties_add_list(notify_group, "notification_position", "📍  Position",
-        obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    
+    local p_scale = obs.obs_properties_add_float_slider(notify_group, "notification_scale", "📏  Scale %", 100.0, 300.0, 10.0)
+    
+    local p_pos = obs.obs_properties_add_list(notify_group, "notification_position", "📍  Position", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
     obs.obs_property_list_add_string(p_pos, "↗ Top Right", "top_right")
     obs.obs_property_list_add_string(p_pos, "↖ Top Left", "top_left")
     obs.obs_property_list_add_string(p_pos, "↘ Bottom Right", "bottom_right")
     obs.obs_property_list_add_string(p_pos, "↙ Bottom Left", "bottom_left")
-
+    
     obs.obs_properties_add_bool(notify_group, "use_quiet_sound", "🔇  Use Quiet Sound (notification_sound_silent.wav)")
 
-    obs.obs_properties_add_float_slider(notify_group, "notification_duration", "⏱️  Popup duration (seconds)", 1.0, 10.0,
-        0.5)
-
-    obs.obs_properties_add_button(notify_group, "test_notification_btn", "🔊  Test Notification",
-        on_test_notification_clicked)
-
+    obs.obs_properties_add_float_slider(notify_group, "notification_duration", "⏱️  Popup duration (seconds)", 1.0, 10.0, 0.5)
+    
+    obs.obs_properties_add_button(notify_group, "test_notification_btn", "🔊  Test Notification", on_test_notification_clicked)
+    
     obs.obs_properties_add_group(props, "notify_section", "🔔  NOTIFICATIONS", obs.OBS_GROUP_NORMAL, notify_group)
 
     -- TOOLS GROUP
     local tools_group = obs.obs_properties_create()
     obs.obs_properties_add_bool(tools_group, "debug_mode", "🐛  Show debug messages in console")
+
+    -- OS MODE SELECTOR (inside Tools group)
+    local os_list = obs.obs_properties_add_list(tools_group, "os_mode",
+        "🖥️  Operating System Mode",
+        obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(os_list, "Auto-Detect", "auto")
+    obs.obs_property_list_add_string(os_list, "Windows", "windows")
+    obs.obs_property_list_add_string(os_list, "Linux", "linux")
+
+    obs.obs_property_set_modified_callback(os_list, function(props, prop, settings)
+        local mode = obs.obs_data_get_string(settings, "os_mode")
+        local is_win = IS_WINDOWS_REAL
+        if mode == "windows" then is_win = true
+        elseif mode == "linux" then is_win = false end
+
+        -- Helper to set visibility safely
+        local function set_vis(name, visible)
+            local p = obs.obs_properties_get(props, name)
+            if p then obs.obs_property_set_visible(p, visible) end
+        end
+
+        -- Windows-only: process scanning (uses Toolhelp32)
+        set_vis("scan_all_processes", is_win)
+        set_vis("scan_all_processes_help", is_win)
+
+        -- Windows-only: Win32 visual popup settings
+        set_vis("notification_scale", is_win)
+        set_vis("notification_position", is_win)
+        set_vis("use_quiet_sound", is_win)
+        set_vis("notify_help", is_win)
+
+        -- Windows-only: update checker (uses powershell + WinExec)
+        set_vis("refresh_status_btn", is_win)
+        set_vis("refresh_hint", is_win)
+        set_vis("open_releases_btn", is_win)
+
+        -- Windows-only: FFmpeg path filter mentions .exe
+        local ffmpeg_prop = obs.obs_properties_get(props, "ffmpeg_path")
+        if ffmpeg_prop then
+            if is_win then
+                obs.obs_property_set_description(ffmpeg_prop, "\u{1F4C2}  FFmpeg Executable Path (ffmpeg.exe)")
+            else
+                obs.obs_property_set_description(ffmpeg_prop, "\u{1F4C2}  FFmpeg Path (/usr/bin/ffmpeg)")
+            end
+        end
+
+        return true
+    end)
+
     obs.obs_properties_add_group(props, "tools_section", "🔧  TOOLS & DEBUG", obs.OBS_GROUP_NORMAL, tools_group)
 
     -- FFMPEG GROUP (Advanced)
     local ffmpeg_group = obs.obs_properties_create()
     obs.obs_properties_add_bool(ffmpeg_group, "enable_thumbnails", "🖼️  Embed Video Dictionary (Thumbnail)")
-    obs.obs_properties_add_float_slider(ffmpeg_group, "thumbnail_offset", "⏱️  Thumbnail Offset (seconds from end)", 1.0,
-        60.0, 1.0)
-    obs.obs_properties_add_path(ffmpeg_group, "ffmpeg_path", "📂  FFmpeg Executable Path (ffmpeg.exe)", obs.OBS_PATH_FILE,
-        "Executables (*.exe);;All Files (*.*)", nil)
-    obs.obs_properties_add_text(ffmpeg_group, "ffmpeg_info",
-        "Note: Requires FFmpeg installed. Adds processing time regarding disk speed.", obs.OBS_TEXT_INFO)
-    obs.obs_properties_add_group(props, "ffmpeg_section", "🎬  FFMPEG THUMBNAILS (Advanced)", obs.OBS_GROUP_NORMAL,
-        ffmpeg_group)
+    obs.obs_properties_add_float_slider(ffmpeg_group, "thumbnail_offset", "⏱️  Thumbnail Offset (seconds from end)", 1.0, 60.0, 1.0)
+    obs.obs_properties_add_path(ffmpeg_group, "ffmpeg_path", "📂  FFmpeg Executable Path (ffmpeg.exe)", obs.OBS_PATH_FILE, "Executables (*.exe);;All Files (*.*)", nil)
+    obs.obs_properties_add_text(ffmpeg_group, "ffmpeg_info", "Note: Requires FFmpeg installed. Adds processing time regarding disk speed.", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_group(props, "ffmpeg_section", "🎬  FFMPEG THUMBNAILS (Advanced)", obs.OBS_GROUP_NORMAL, ffmpeg_group)
+
+    -- Apply initial visibility based on detected OS
+    if not IS_WINDOWS then
+        local function hide(name)
+            local p = obs.obs_properties_get(props, name)
+            if p then obs.obs_property_set_visible(p, false) end
+        end
+        hide("scan_all_processes")
+        hide("scan_all_processes_help")
+        hide("notification_scale")
+        hide("notification_position")
+        hide("use_quiet_sound")
+        hide("notify_help")
+        hide("refresh_status_btn")
+        hide("refresh_hint")
+        hide("open_releases_btn")
+    end
 
     return props
 end
@@ -5723,19 +5751,15 @@ end
 
 function script_update(settings)
     CONFIG.os_mode = obs.obs_data_get_string(settings, "os_mode")
-    if CONFIG.os_mode == "windows" then
-        IS_WINDOWS = true
-    elseif CONFIG.os_mode == "linux" then
-        IS_WINDOWS = false
-    else
-        IS_WINDOWS = IS_WINDOWS_REAL
-    end
-
+    if CONFIG.os_mode == "windows" then IS_WINDOWS = true
+    elseif CONFIG.os_mode == "linux" then IS_WINDOWS = false
+    else IS_WINDOWS = IS_WINDOWS_REAL end
+    
     WINDOWS_FFI_AVAILABLE = IS_WINDOWS and ffi ~= nil and user32 ~= nil
     VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
 
     read_config(settings)
-
+    
     load_custom_names(settings)
 
     local exact_count = 0
@@ -5744,10 +5768,7 @@ function script_update(settings)
     local contains_count = #CUSTOM_NAMES_CONTAINS
     local total_count = exact_count + keywords_count + contains_count
     if total_count > 0 then
-        dbg("Loaded " ..
-            total_count ..
-            " custom name mapping(s) (" ..
-            exact_count .. " exact, " .. keywords_count .. " keywords, " .. contains_count .. " contains)")
+        dbg("Loaded " .. total_count .. " custom name mapping(s) (" .. exact_count .. " exact, " .. keywords_count .. " keywords, " .. contains_count .. " contains)")
     end
 end
 
@@ -5795,7 +5816,7 @@ function script_load(settings)
         "Smart Save Replay (Instant Notification)",
         smart_save_replay
     )
-
+    
     -- Load saved hotkey binding
     local hotkey_save_array = obs.obs_data_get_array(settings, "smart_save_replay_hotkey")
     if hotkey_save_array then
@@ -5819,7 +5840,7 @@ function script_load(settings)
     log("Prefix: " .. (CONFIG.add_game_prefix and "ON" or "OFF") ..
         " | Recordings: " .. (CONFIG.organize_recordings and "ON" or "OFF") ..
         " | Fallback: " .. CONFIG.fallback_folder)
-
+    
     -- AUTO UPDATE CHECK (runs async, result ready by UI open)
     if kernel32 then
         pcall(function()
@@ -5860,12 +5881,12 @@ end
 function script_unload()
     obs.timer_remove(check_split_files)
     obs.timer_remove(notification_timer_callback)
-    obs.timer_remove(process_notification_queue) -- Stop notification queue processor
+    obs.timer_remove(process_notification_queue)   -- Stop notification queue processor
     obs.timer_remove(delayed_recording_init)
-    obs.timer_remove(parse_startup_update_result) -- Stop startup update check if still running
-    obs.timer_remove(auto_start_buffer_on_load) -- Cancel auto-start if still pending
+    obs.timer_remove(parse_startup_update_result)  -- Stop startup update check if still running
+    obs.timer_remove(auto_start_buffer_on_load)    -- Cancel auto-start if still pending
     notification_timer_should_stop = true
-    notification_queue = {}                    -- Discard any pending notifications
+    notification_queue = {}                        -- Discard any pending notifications
 
     disconnect_recording_signals()
 
