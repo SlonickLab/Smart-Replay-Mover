@@ -44,6 +44,7 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 --   - FFmpeg execution via shell commands on Linux (no .bat files)
 --   - Steam app identifier handling for Linux .desktop files
 --   - Quiet sound toggle (notification_sound_silent.wav) works on Linux via paplay/pw-play
+--   - Fixed FFmpeg thumbnails on Linux: proper shell quoting, path validation, error logging
 --   - Audit fixes: restored corrupted show_notification, removed stray end,
 --     added missing FFI declarations (FindWindowA, GetModuleHandleA,
 --     GetSystemMetrics, WinExec, WNDCLASSEXA, RegisterClassExA),
@@ -4413,7 +4414,13 @@ end
 local function run_task_sync_hidden(commands, unique_id)
     if not WINDOWS_FFI_AVAILABLE then
         for _, cmd in ipairs(commands) do
-            if not run_shell_command(cmd) then return false end
+            -- Redirect stderr to /dev/null for clean execution
+            local full_cmd = cmd .. " 2>/dev/null"
+            dbg("Linux exec: " .. cmd)
+            if not run_shell_command(full_cmd) then
+                log("ERROR: Linux command failed: " .. cmd)
+                return false
+            end
         end
         return true
     end
@@ -4481,11 +4488,25 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
             elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub end
         end
     else
-        if not string.match(lower_path, "/ffmpeg$") and not string.match(lower_path, "^ffmpeg$") then
+        -- On Linux, allow bare "ffmpeg" (found via PATH) or explicit path
+        if ffmpeg_path == "ffmpeg" then
+            -- Use system ffmpeg from PATH — check if it exists
+            if not command_exists("ffmpeg") then
+                log("ERROR: ffmpeg not found in PATH")
+                return false
+            end
+        elseif not string.match(lower_path, "/ffmpeg$") then
             local try_bin = ffmpeg_path .. "/ffmpeg"
             local try_bin_sub = ffmpeg_path .. "/bin/ffmpeg"
             if obs.os_file_exists(try_bin) then ffmpeg_path = try_bin
-            elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub end
+            elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub
+            else
+                log("ERROR: ffmpeg not found at: " .. ffmpeg_path)
+                return false
+            end
+        elseif not obs.os_file_exists(ffmpeg_path) then
+            log("ERROR: ffmpeg not found at: " .. ffmpeg_path)
+            return false
         end
     end
 
@@ -4494,9 +4515,20 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     local temp_thumb = src .. "." .. unique_id .. ".thumb.jpg"
     
     local commands = {}
+
+    -- Build commands with platform-appropriate quoting
+    -- Windows: double quotes work in .bat files
+    -- Linux: use shell-safe single-quote escaping
+    local function q(path)
+        if IS_WINDOWS then
+            return '"' .. path .. '"'
+        else
+            return quote_shell_arg(path)
+        end
+    end
     
-    table.insert(commands, string.format('"%s" -sseof -%.1f -i "%s" -vframes 1 -q:v 2 -y "%s"',
-        ffmpeg_path, offset, src, temp_thumb))
+    table.insert(commands, string.format('%s -sseof -%.1f -i %s -vframes 1 -q:v 2 -y %s',
+        q(ffmpeg_path), offset, q(src), q(temp_thumb)))
         
     -- Embed and Move
     -- Logic depends on container type:
@@ -4507,17 +4539,11 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     local cmd_embed = ""
     
     if is_mkv then
-        -- MKV Strategy: Use -attach for true Matroska attachments
-        -- -c copy: Copy video/audio streams
-        -- -attach: Attach the thumbnail file
-        -- -metadata:s:t:0 mimetype: Set MIME type for the FIRST attachment stream explicitly
-        -- -metadata:s:t:0 filename: Naming it "cover.jpg" or "cover.png" helps detection
-        cmd_embed = string.format('"%s" -i "%s" -map 0 -c copy -attach "%s" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename="cover.jpg" -y "%s"',
-            ffmpeg_path, src, temp_thumb, target)
+        cmd_embed = string.format('%s -i %s -map 0 -c copy -attach %s -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename=cover.jpg -y %s',
+            q(ffmpeg_path), q(src), q(temp_thumb), q(target))
     else
-        -- MP4/Other Strategy: Use stream mapping
-        cmd_embed = string.format('"%s" -i "%s" -i "%s" -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title="Cover Art" -y "%s"',
-            ffmpeg_path, src, temp_thumb, target)
+        cmd_embed = string.format('%s -i %s -i %s -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title=Cover_Art -y %s',
+            q(ffmpeg_path), q(src), q(temp_thumb), q(target))
     end
         
     table.insert(commands, cmd_embed)
