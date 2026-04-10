@@ -2,18 +2,18 @@
 
   # 🎮 Smart Replay Mover
 
-  ### The Ultimate Zero-Config Organizer for OBS
+  ### A Zero-Config Clip Organizer for OBS Studio
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.8.2-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.9.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
-  [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)]()
+  [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
 
-  [Features](#-features) • [Installation](#-installation) • [Configuration](#%EF%B8%8F-configuration) • [Custom Names](#-custom-names)
+  [Features](#-features) • [Installation](#-installation) • [How It Works](#-how-it-works) • [Configuration](#%EF%B8%8F-configuration) • [Custom Names](#-custom-names)
   <br>
-  [FFmpeg Setup](#%EF%B8%8F-video-thumbnails-ffmpeg) • [Troubleshooting](#-troubleshooting) • [Changelog](#-changelog)
+  [Notifications](#-notification-system) • [FFmpeg Setup](#%EF%B8%8F-video-thumbnails-ffmpeg) • [Troubleshooting](#-troubleshooting) • [Changelog](#-changelog)
 
   ---
 
@@ -21,9 +21,9 @@
 
   ## ✨ Why Smart Replay Mover?
 
-  Stop messing with Python installations, libraries, and version conflicts. Smart Replay Mover is a **native Lua script** designed for maximum performance and ease of use.
+  Smart Replay Mover is a single **Lua script** that you add to OBS. It requires no Python, no libraries, and no external dependencies.
 
-  Unlike other scripts that rely solely on OBS internal hooks, this tool uses **Windows API (via FFI)** to intelligently detect what you're actually playing. This ensures your clips land in the right folder every time—even with Display Capture, Borderless modes, or Anti-Cheat systems.
+  Instead of only checking what OBS is recording, it uses OS-level APIs (Win32 FFI on Windows, `xprop`/`gdbus` on Linux) to detect the active window focus. This allows it to correctly sort files even if you're using Display Capture, Borderless Windowed modes, or playing games with strict anti-cheat.
 
   <div align="center">
 
@@ -32,6 +32,7 @@
   | All clips in one messy folder | Organized by game automatically |
   | Manual sorting after each session | Set and forget |
   | No idea when clip was saved | Visual + sound notifications |
+  | Python scripts with broken dependencies | Single Lua file, zero setup |
 
   </div>
 
@@ -40,16 +41,21 @@
   ## 🚀 Features
 
   ### 🎯 Intelligent Game Detection
-  - **Windows API Detection** — Checks what Windows is focusing on, not just OBS
-  - **1800+ Built-in Games** — Massive embedded database, no external files needed
+  - **Cross-Platform Detection** — Uses Windows API (Win32 FFI) or Linux tools (`xprop`, `gdbus`) to detect the active game
+  - **1900+ Built-in Games** — Massive embedded database, no external files needed
   - **Auto-Pattern Matching** — `minecraft_1.20.exe` → Saves to `Minecraft`
-  - **Anti-Cheat Compatible** — Window title fallback for protected games
+  - **Anti-Cheat Compatible** — Window title fallback for protected games (Valorant, Fortnite, Sea of Thieves)
+  - **🔍 Background Game Scanning** — Optional: detect games even when alt-tabbed to Discord (Windows)
+  - **Linux OBS Sources** — Scans `xcomposite`, PipeWire, and X11 capture sources
   - **99.9% Accuracy** — Smart fallback chain ensures correct detection
 
   ### 🔔 Notification System
-  - **Visual Popup** — ShadowPlay-style dark popup with smooth animations
+  - **Visual Popup** — ShadowPlay-style dark popup with smooth fade animations (Windows)
+  - **🐧 Linux Notifications** — Uses `notify-send` for native desktop notifications
   - **Smart Fullscreen Detection** — Popup in Borderless, sound-only in Exclusive Fullscreen
-  - **Custom Sound** — Use your own notification sound
+  - **Custom Sound** — Use your own `.wav` notification sound (`paplay`/`pw-play` on Linux)
+  - **📏 Scaling** — 100–300% for 4K/HiDPI monitors
+  - **📍 Positioning** — Choose any corner: Top Right, Top Left, Bottom Right, Bottom Left
   - **Click-through** — Popup doesn't block your game
 
   ### 📁 Organization
@@ -57,8 +63,7 @@
   - **Regular Recordings** — Start/Stop recording support
   - **Screenshots** — Optional organization
   - **File Splitting** — Handles long recording segments correctly
-  - **🖼️ FFmpeg Thumbnails** — Optional cover art embedding for your clips
-
+  - **🖼️ FFmpeg Thumbnails** — Optional cover art embedding for your clips (Windows & Linux)
 
   ### 🛡️ Quality of Life
   - **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
@@ -67,24 +72,84 @@
   - **230+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
   - **⚡ Smart Save Hotkey** — Instant "Saving..." notification when pressing your custom hotkey
   - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root
+  - **📦 Import/Export** — Share your custom name mappings with one click
+  - **🔄 Auto-Update Check** — Notifies you when a new version is available
 
   ---
 
   ## 📥 Installation
+
+  ### Windows
 
   1. **Download** the latest release from [Releases](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
 
   2. **Extract** the ZIP archive
      > ⚠️ Do NOT load the .zip file directly into OBS
 
-  3. **Move** `Smart Replay Mover.lua` to a permanent location (e.g., Documents)
+  3. **Move** `Smart_Replay_Mover.lua` to a permanent location (e.g., Documents)
 
   4. **Add to OBS:**
      - Open OBS Studio
      - Go to `Tools` → `Scripts`
      - Click `+` and select the `.lua` file
 
-  5. **Done!** The script works immediately with default settings.
+  5. **Done!** The script works immediately with default settings. No Python, no dependencies.
+
+  ### 🐧 Linux
+
+  1. **Download** and extract the same way
+  2. **Add to OBS** the same way (`Tools` → `Scripts` → `+`)
+  3. **Install dependencies** — run the included setup script:
+
+  ```bash
+  cd "For Linux"
+  chmod +x install_linux_deps.sh
+  ./install_linux_deps.sh
+  ```
+
+  The script auto-detects your package manager (apt, pacman, dnf, zypper, apk) and installs everything needed:
+  - `xprop` — game detection (X11)
+  - `notify-send` — desktop notifications
+  - `paplay` / `pw-play` — notification sound
+  - `ffmpeg` — video thumbnails
+  - Also checks for `gdbus` (KDE Wayland support)
+
+  4. **Done!** The script auto-detects Linux — no configuration needed.
+
+  > 💡 On **KDE Plasma (Wayland)**, game detection uses `gdbus` which is included with GNOME/KDE — no extra install needed.
+
+  <details>
+  <summary>Manual installation (if you prefer)</summary>
+
+  | Package | Purpose | Install (Arch) | Install (Debian/Ubuntu) |
+  |---------|---------|----------------|------------------------|
+  | `xprop` | Game detection (X11) | `sudo pacman -S xorg-xprop` | `sudo apt install x11-utils` |
+  | `notify-send` | Desktop notifications | `sudo pacman -S libnotify` | `sudo apt install libnotify-bin` |
+  | `paplay` / `pw-play` | Notification sound | Usually pre-installed | Usually pre-installed |
+  | `ffmpeg` | Video thumbnails | `sudo pacman -S ffmpeg` | `sudo apt install ffmpeg` |
+
+  </details>
+
+  ---
+
+  ## 🔍 How It Works
+
+  The script uses a multi-step detection chain to identify what you're playing. Each step is a fallback for the previous one:
+
+  ```
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Priority 1: Custom Names (your rules — ALWAYS highest)        │
+  │  Priority 2: Active process name (Win32 / xprop / gdbus)       │
+  │  Priority 3: Built-in game database (1900+ games)              │
+  │  Priority 4: Pattern matching (auto-clean process names)       │
+  │  Priority 5: Window title fallback (anti-cheat bypass)         │
+  │  Priority 6: OBS capture source names                          │
+  │  Priority 7: Background game scan (optional, Windows only)     │
+  │  Priority 8: Fallback folder (default: "Desktop")              │
+  └─────────────────────────────────────────────────────────────────┘
+  ```
+
+  Every platform-specific code path is wrapped in `pcall()` — the script **never crashes** regardless of OS or settings.
 
   ---
 
@@ -95,38 +160,16 @@
   ### 📁 File Naming
   | Setting | Description |
   |---------|-------------|
-  | Add game prefix | Adds game name to filename (e.g., `CS2 - Replay...`) |
+  | Add game prefix | Adds game name to filename (e.g., `CS2 - Replay 2025-06-15.mp4`) |
   | Fallback folder | Folder name when no game detected (default: `Desktop`) |
 
-  ### 🗂️ Organization
+  ### 🎮 Custom Names (Highest Priority)
   | Setting | Description |
   |---------|-------------|
-  | Monthly subfolders | Creates `YYYY-MM` subfolders |
-  | Organize screenshots | Also sort screenshots |
-  | Organize recordings | Sort regular recordings (not just replays) |
-
-  ### 🛡️ Spam Protection
-  | Setting | Description |
-  |---------|-------------|
-  | Cooldown | Seconds between saves (prevents duplicates) |
-  | Auto-delete | Automatically remove duplicate files |
-
-  ### 🔔 Notifications
-  | Setting | Description |
-  |---------|-------------|
-  | Show popup | Visual notification (Borderless/Windowed only) |
-  | Play sound | Audio notification (works in Fullscreen) |
-  | Scale % | Resize popup for 4K/HiDPI monitors (100-300%) |
-  | Position | Choose popup corner: Top Right, Top Left, Bottom Right, Bottom Left |
-  | Duration | How long popup stays visible (1-10 seconds) |
-  
-  ### 🎥 Advanced (FFmpeg)
-  | Setting | Description |
-  |---------|-------------|
-  | Enable Thumbnails | Embed frame from video as cover art |
-  | FFmpeg Path | Path to your `ffmpeg.exe` |
-  | Thumbnail Offset | Time (sec) to grab the frame from |
-
+  | Game field | Process name, `+keywords`, or `*pattern*` to match |
+  | Folder field | Target folder name (or `.` / `/` for no subfolder) |
+  | Add button | Saves the new mapping |
+  | Your mappings | Edit or delete existing rules |
 
   ### 💾 Backup
   | Setting | Description |
@@ -140,7 +183,45 @@
   |---------|-------------|
   | Auto-restart after save | Stops and restarts buffer after each save (prevents overlap) |
   | Auto-start on launch | Automatically starts Replay Buffer when OBS opens |
-  | Smart Save Hotkey | Assign in OBS Settings → Hotkeys for instant "Saving..." feedback |
+  | Smart Save Hotkey | Assign in OBS Settings → Hotkeys → "Smart Save Replay" for instant feedback |
+
+  ### 🗂️ Organization
+  | Setting | Description |
+  |---------|-------------|
+  | Monthly subfolders | Creates `YYYY-MM` subfolders |
+  | Organize screenshots | Also sort screenshots |
+  | Organize recordings | Sort regular recordings (not just replays) |
+  | Scan all processes | Detect background games when alt-tabbed (Windows only) |
+
+  ### 🛡️ Spam Protection
+  | Setting | Description |
+  |---------|-------------|
+  | Cooldown | Seconds between saves (prevents duplicates) |
+  | Auto-delete | Automatically remove duplicate files |
+
+  ### 🔔 Notifications
+  | Setting | Description |
+  |---------|-------------|
+  | Show popup | Visual notification — Win32 overlay (Windows) or `notify-send` (Linux) |
+  | Play sound | Audio notification (works in Fullscreen too) |
+  | Scale % | Resize popup for 4K/HiDPI monitors, 100–300% (Windows) |
+  | Position | Choose popup corner: Top Right, Top Left, Bottom Right, Bottom Left (Windows) |
+  | Quiet Sound | Switch to `notification_sound_silent.wav` for softer alert |
+  | Duration | How long popup stays visible (1–10 seconds) |
+  | Test button | Preview notifications instantly from settings |
+
+  ### 🔧 Tools & Debug
+  | Setting | Description |
+  |---------|-------------|
+  | Debug mode | Show detailed detection messages in OBS Script Log |
+  | OS Mode | Auto-Detect (default), Windows, or Linux — for testing cross-platform |
+
+  ### 🎬 FFmpeg Thumbnails (Advanced)
+  | Setting | Description |
+  |---------|-------------|
+  | Enable Thumbnails | Embed frame from video as cover art |
+  | FFmpeg Path | Path to `ffmpeg.exe` (Windows) or `ffmpeg` (Linux) |
+  | Thumbnail Offset | Time (sec) from end of video to grab the frame |
 
   ---
 
@@ -149,55 +230,92 @@
   Three powerful matching modes for any situation:
 
   ### Exact Match
+  ```
   CS2 > Counter-Strike 2
-  Maps process name directly to folder name.
+  ```
+  Maps process name directly to folder name. Simplest and fastest.
 
   ### Keywords Mode
+  ```
   +Warhammer Marine > Space Marine 2
+  ```
   Matches if **all** keywords are present (AND logic). Prefix with `+`.
 
   ### Contains Mode
-  `*Space Marine 2* > Space Marine 2`
+  ```
+  *Space Marine 2* > Space Marine 2
+  ```
   Matches if text is found **anywhere** in process name or window title. Wrap in `*`.
 
   > 💡 **Pro Tip:** Contains mode is perfect for games with version numbers that change with updates!
+  >
+  > Example: `*Space Marine 2*` matches `Warhammer 40,000 Space Marine 2 CLIENT v11.2.799056`
+
+  ### No-Folder Mode
+  ```
+  chrome > /
+  discord > .
+  ```
+  Map a process to `/`, `\`, or `.` to keep files in the OBS output root without creating a subfolder. The game prefix is still added if enabled.
 
   ### Examples
 
   | Custom Name | What It Matches |
   |-------------|-----------------|
-  | `r5apex > Apex Legends` | Process `r5apex.exe` |
+  | `r5apex > Apex Legends` | Process `r5apex.exe` → folder `Apex Legends` |
   | `+Warhammer Space > WH40K` | Any window containing both words |
   | `*Cyberpunk* > Cyberpunk 2077` | `Cyberpunk 2077 v2.1 Patch...` |
-  | `chrome > /` | Chrome clips stay in OBS output root (no subfolder). Also supports `\` and `.` |
+  | `*Sea of Thieves* > Sea of Thieves` | Works even with anti-cheat blocking process |
+  | `chrome > /` | Chrome clips stay in OBS output root (no subfolder) |
+
+  > ⚠️ **CRITICAL TIP:** When using `*pattern*`, you are matching the **WINDOW TITLE**, not the .exe name!
+  > 
+  > - ❌ `*cs2*` → Won't work because the window is named "Counter-Strike 2" (doesn't contain "cs2").
+  > - ✅ `*Counter-Strike*` → Works perfectly!
+  > - ❌ `*FactoryGamesteam*` → Won't work because window is named "Satisfactory".
+  > - ✅ `*Satisfactory*` → Works perfectly!
+
+  The `*pattern*` mode matches the window title, which works even when anti-cheat blocks process detection!
 
   ---
 
-  ## 🔊 Custom Notification Sound
+  ## 🔔 Notification System
 
-  1. Find a short sound file (1-2 seconds recommended)
+  ### Windows
+  The script creates a native Win32 overlay window — a dark semi-transparent popup similar to NVIDIA ShadowPlay. It fades in/out smoothly and is completely click-through.
+
+  - **Borderless/Windowed** → visual popup + optional sound
+  - **Exclusive Fullscreen** → sound only (popup can't overlay fullscreen)
+
+  ### 🐧 Linux
+  Notifications use `notify-send` for visual alerts and `paplay`/`pw-play` for sound. Works with any desktop environment.
+
+  ### 🔊 Custom Notification Sound
+
+  1. Find a short sound file (1–2 seconds recommended)
   2. Convert to **WAV format** if needed
   3. Rename to `notification_sound.wav`
   4. Place in the same folder as the script:
 
   ```
   📁 Your Folder/
-  ├── Smart Replay Mover.lua
-  └── notification_sound.wav
+  ├── Smart_Replay_Mover.lua
+  ├── notification_sound.wav          ← Normal sound
+  └── notification_sound_silent.wav   ← Quiet sound (optional)
   ```
 
   5. Reload the script — done!
 
-  ### 🔇 Quiet Sound Option (v2.7.7+)
+  ### 🔇 Quiet Sound Option
   
   If the standard sound is too loud, you can use a separate "quiet" sound file:
   
-  1. Prepare a quieter sound file.
-  2. Name it `notification_sound_silent.wav`.
-  3. Place it in the same folder.
-  4. In script settings, check **"Use Quiet Sound"**.
+  1. Prepare a quieter sound file
+  2. Name it `notification_sound_silent.wav`
+  3. Place it in the same folder
+  4. In script settings, check **"Use Quiet Sound"**
   
-  Now you can toggle between the Normal and Quiet versions instantly!
+  Now you can toggle between the Normal and Quiet versions instantly! Works on both Windows and Linux.
 
   ---
 
@@ -217,7 +335,11 @@
   ├── 📁 Space Marine 2/
   │   └── Space Marine 2 - 2025-06-17 18-45-00.mp4
   │
-  └── 📁 Desktop/
+  ├── 📁 Minecraft/
+  │   └── 2025-06/                    ← Optional date subfolder
+  │       └── Minecraft - 2025-06-18 11-22-33.mp4
+  │
+  └── 📁 Desktop/                     ← Fallback folder
       └── Desktop - 2025-06-17 09-00-00.mp4
   ```
 
@@ -229,13 +351,13 @@
   
   **IMPORTANT:** The script detects the **Active Window** (what you are currently looking at).
   
-  - If you Alt-Tab to OBS to change settings -> The script sees "OBS Studio".
+  - If you Alt-Tab to OBS to change settings → The script sees "OBS Studio".
   - Since OBS is in the ignores list, the script does nothing.
   
   **How to Test Properly:**
   1. Set up your Custom Names.
   2. **Alt-Tab back into the game.**
-  3. Wait 3-5 seconds.
+  3. Wait 3–5 seconds.
   4. Save a Replay.
   5. Check the folder.
 
@@ -262,12 +384,32 @@
 
   > 💡 **CRITICAL TIP:** When using `*pattern*`, you are matching the **WINDOW TITLE**, not the .exe name!
   > 
-  > - ❌ `*cs2*` -> Won't work because the window is named "Counter-Strike 2" (doesn't contain "cs2").
-  > - ✅ `*Counter-Strike*` -> Works perfectly!
-  > - ❌ `*FactoryGamesteam*` -> Won't work because window is named "Satisfactory".
-  > - ✅ `*Satisfactory*` -> Works perfectly!
+  > - ❌ `*cs2*` → Won't work because the window is named "Counter-Strike 2" (doesn't contain "cs2").
+  > - ✅ `*Counter-Strike*` → Works perfectly!
+  > - ❌ `*FactoryGamesteam*` → Won't work because window is named "Satisfactory".
+  > - ✅ `*Satisfactory*` → Works perfectly!
 
   The `*pattern*` mode matches the window title, which works even when anti-cheat blocks process detection!
+
+  ---
+
+  ### 🐧 Linux: Notifications not showing?
+
+  Make sure `notify-send` is installed:
+  ```bash
+  which notify-send
+  # If missing: sudo apt install libnotify-bin (Ubuntu) or sudo pacman -S libnotify (Arch)
+  ```
+
+  ### 🐧 Linux: Sound not playing?
+
+  Make sure `paplay` or `pw-play` is available, and `notification_sound.wav` is in the same folder as the script.
+
+  ### 🐧 Linux: FFmpeg thumbnails not working?
+
+  - Check that FFmpeg path is correct (`ffmpeg` for PATH or `/usr/bin/ffmpeg` for absolute)
+  - Enable **Debug Mode** in Tools & Debug and check the OBS Script Log for errors
+  - Check file permissions for the video files
 
   ---
 
@@ -275,27 +417,37 @@
 
   Enhance your clip library by embedding high-quality cover art into your videos. This allows Windows Explorer (and tools like [Icaros](https://www.majorgeeks.com/files/details/icaros.html)) to display a frame from your gameplay as the file icon instead of a generic media player logo.
 
-  ### 📥 1. Download FFmpeg
+  ### Windows Setup
   1. Go to [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (recommended Windows builds).
   2. Download the `ffmpeg-release-essentials.zip`.
   3. Extract it to a permanent folder (e.g., `C:\Program Files\ffmpeg`).
+  4. In script settings → **FFmpeg Thumbnails** → Enable and browse to `ffmpeg.exe` (inside the `bin` folder).
 
-  ### ⚙️ 2. Configuration in OBS
-  1. Open OBS Studio → **Tools** → **Scripts**.
-  2. Select **Smart Replay Mover**.
-  3. Go to the **🎥 Advanced (FFmpeg)** section.
-  4. Enable **"Enable Thumbnails"**.
-  5. Click **Browse** for **FFmpeg Path** and select the `ffmpeg.exe` file (located inside the `bin` folder of your extraction).
+  ### 🐧 Linux Setup
+  1. Install via your package manager: `sudo apt install ffmpeg` or `sudo pacman -S ffmpeg`
+  2. In script settings → set FFmpeg Path to `ffmpeg` or `/usr/bin/ffmpeg`
 
-  ### ✨ Benefits
-  - **Silent & Invisible** — FFmpeg runs completely in the background without popups.
-  - **No Quality Loss** — Metadata is embedded without re-encoding your video.
-  - **Universal Compatibility** — Works with both MKV (attachments) and MP4 (tags).
+  ### ✨ How It Works
+  - **MKV files** — thumbnail attached as Matroska attachment (best for Icaros on Windows)
+  - **MP4 files** — thumbnail embedded as attached picture stream
+  - **Silent & Invisible** — FFmpeg runs completely in the background without popups
+  - **No Quality Loss** — Metadata is embedded without re-encoding your video
+  - **Cross-Platform** — Proper shell quoting on both Windows and Linux
 
   ---
 
   ## 📋 Changelog
-  
+
+  ### v2.9.0 — 🐧 Linux Support & Cross-Platform Architecture
+  - **🐧 Linux Support** — Full cross-platform support! Game detection via `xprop` (X11) and `gdbus` (KDE/Wayland), notifications via `notify-send`, audio via `paplay`/`pw-play`. (PR by @zxsleebu, [#19](https://github.com/SlonickLab/Smart-Replay-Mover/issues/19))
+  - **🖥️ OS Mode Selector** — New dropdown in Tools & Debug: Auto-Detect, Windows, or Linux. Windows-only features auto-hide on Linux.
+  - **🛡️ Crash Prevention** — Every platform-specific code path wrapped in `pcall()`. Script never crashes regardless of OS mode mismatch.
+  - **🔧 FFI Consolidation** — All Windows API definitions merged into a single guarded block for maximum stability.
+  - **🎮 Linux OBS Sources** — Scans `xcomposite_input`, `pipewire-window-capture-source`, `xshm_input` and more.
+  - **🎵 Linux Audio** — Notification sound playback via `paplay` (PulseAudio) or `pw-play` (PipeWire).
+  - **🖥️ Adaptive UI** — Windows-only settings (Scan Processes, Scale, Position, Update Checker) auto-hide on Linux.
+  - **🎬 FFmpeg Thumbnails on Linux** — Proper shell quoting, path validation, and error logging for cross-platform FFmpeg support.
+
   ### v2.8.2
   - **🔍 Background Game Detection** — Added an option to scan all running processes for a game if the active window isn't one. This serves as a smart fallback if you alt-tabbed to Discord or the desktop before saving a clip! (Feature request: @EndCod3r)
   - **🛡️ 100% Anti-Cheat Safe** — The implementation uses zero-overhead, read-only `Toolhelp32Snapshot` APIs, rendering it completely invisible to anti-cheat systems.
@@ -312,6 +464,9 @@
   - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root without creating a subfolder (Idea by lemenegg)
   - **🌍 Community-Driven Database** — The massive built-in database of 1800+ games is now available as a separate `games_database.json` file in the GitHub repository, making it super easy for the community to add new games via Pull Requests
   - **🧹 Code Quality** — Cleaned up duplicate `ffi.cdef` type declarations for better stability
+  
+  <details>
+  <summary>View older versions</summary>
 
   ### v2.7.9
   - **🐛 Detection Fix** — Fixed `is_ignored()` false positives (`"obs"` no longer matches `"observer"`, `"code"` no longer matches `"barcode"`)
@@ -376,9 +531,6 @@
   - ⚡ **Instant Loading** — No lazy-loading delays, database ready immediately
   - 🔧 **Cleaner Code** — Optimized and consolidated codebase
   - 🐛 **Fixed** Explorer folders with game names no longer confused with actual games
-  
-  <details>
-  <summary>View older versions</summary>
 
   ### v2.6.3
   - 🐛 **Fixed** Telegram/Explorer creating wrong folders from window titles
@@ -415,9 +567,9 @@
 
   Contributions are welcome! Feel free to:
 
-  - 🐛 Report bugs
-  - 💡 Suggest features
-  - 🎮 Add game mappings
+  - 🐛 Report bugs via [Issues](https://github.com/SlonickLab/Smart-Replay-Mover/issues)
+  - 💡 Suggest features via [Discussions](https://github.com/SlonickLab/Smart-Replay-Mover/discussions)
+  - 🎮 Add game mappings to `games_database.json` via Pull Request
   - 🌍 Help with translations
 
   ---
