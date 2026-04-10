@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.8.2
+-- Smart Replay Mover v2.9.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.8.2"
+local VERSION = "2.9.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,25 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.9.0:
+--   - Linux Support: game detection via xprop (X11) and gdbus (KDE/Wayland)
+--   - Linux notifications via notify-send, sound via paplay/pw-play
+--   - OS Mode Selector (Auto-Detect / Windows / Linux) in Tools & Debug
+--   - Adaptive UI: Windows-only settings auto-hide on Linux
+--   - All FFI declarations consolidated into single guarded block
+--   - Every platform-specific path wrapped in pcall() for crash-proof stability
+--   - Linux OBS source scanning (xcomposite, pipewire, xshm)
+--   - Cross-platform helpers: join_path(), quote_shell_arg(), run_shell_command()
+--   - FFmpeg execution via shell commands on Linux (no .bat files)
+--   - Steam app identifier handling for Linux .desktop files
+--   - Quiet sound toggle (notification_sound_silent.wav) works on Linux via paplay/pw-play
+--   - Fixed FFmpeg thumbnails on Linux: proper shell quoting, path validation, error logging
+--   - Audit fixes: restored corrupted show_notification, removed stray end,
+--     added missing FFI declarations (FindWindowA, GetModuleHandleA,
+--     GetSystemMetrics, WinExec, WNDCLASSEXA, RegisterClassExA),
+--     added SEE_MASK_NOCLOSEPROCESS constant, fixed Lua pattern syntax,
+--     fixed nil crash in GITHUB_VERSION_FILE on Linux
+--
 -- CHANGELOG v2.8.2:
 --   - Added "Scan all running processes" fallback option (Thanks @EndCod3r)
 --   - Implemented zero-overhead Toolhelp32Snapshot API for safe process detection instead of OpenProcess
@@ -102,9 +121,68 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- ============================================================================
 
 local obs = obslua
-local ffi = require("ffi")
+local HAS_FFI, ffi = pcall(require, "ffi")
+if not HAS_FFI then ffi = nil end
 
--- Get script directory at load time (for custom sound file)
+local PATH_SEP = package.config and package.config:sub(1, 1) or "/"
+local IS_WINDOWS_REAL = PATH_SEP == "\\"
+local TEMP_DIR = os.getenv("TEMP") or os.getenv("TMP") or os.getenv("TMPDIR") or "/tmp"
+
+-- Global flags
+IS_WINDOWS = IS_WINDOWS_REAL
+WINDOWS_FFI_AVAILABLE = IS_WINDOWS and ffi ~= nil
+VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
+
+local function get_env_first(...)
+    for i = 1, select("#", ...) do
+        local value = os.getenv(select(i, ...))
+        if value and value ~= "" then return value end
+    end
+    return nil
+end
+
+function join_path(dir, name)
+    if not dir or dir == "" then return name end
+    if dir:sub(-1) == "/" or dir:sub(-1) == "\\" then return dir .. name end
+    return dir .. PATH_SEP .. name
+end
+
+function quote_shell_arg(value)
+    return "'" .. tostring(value):gsub("'", "'\"'\"'") .. "'"
+end
+
+function run_shell_command(command)
+    local ok, ok_res, why, code = pcall(os.execute, command)
+    if not ok then return false end
+    if type(ok_res) == "number" then return ok_res == 0 end
+    if ok_res == true then
+        if why == "exit" then return code == 0 end
+        return true
+    end
+    return false
+end
+
+function command_exists(command_name)
+    return run_shell_command("command -v " .. quote_shell_arg(command_name) .. " >/dev/null 2>&1")
+end
+
+function capture_command_output(command)
+    local ok, pipe = pcall(io.popen, command .. " 2>/dev/null")
+    if not ok or not pipe then return nil end
+    local output = pipe:read("*a")
+    pcall(function() pipe:close() end)
+    if not output or output == "" then return nil end
+    return output
+end
+
+function extract_quoted_value(text, key)
+    if not text or not key then return nil end
+    local pattern = "'" .. key .. "': <'([^']*)'>"
+    local value = string.match(text, pattern)
+    if value and value ~= "" then return value end
+    return nil
+end
+
 local SCRIPT_DIR = (function()
     local info = debug.getinfo(1, "S")
     if info and info.source then
@@ -124,6 +202,7 @@ end)()
 -- ============================================================================
 
 local CONFIG = {
+    os_mode = "auto",
     add_game_prefix = true,
     organize_screenshots = true,
     organize_recordings = true,
@@ -2780,176 +2859,221 @@ end
 -- WINDOWS API
 -- ============================================================================
 
-ffi.cdef[[
-    typedef unsigned long DWORD;
-    typedef void* HANDLE;
-    typedef void* HWND;
-    typedef int BOOL;
-    typedef const char* LPCSTR;
-    typedef const unsigned short* LPCWSTR;
-    typedef unsigned short* LPWSTR;
-    typedef unsigned short wchar_t;
-    typedef void* HINSTANCE;
-    typedef void* HICON;
-    typedef void* HCURSOR;
-    typedef void* HBRUSH;
-    typedef void* HDC;
-    typedef void* HFONT;
-    typedef void* HGDIOBJ;
-    typedef unsigned int UINT;
-    typedef long LONG;
-    typedef int64_t LONG_PTR;
-    typedef uint64_t UINT_PTR;
-    typedef UINT_PTR WPARAM;
-    typedef LONG_PTR LPARAM;
-    typedef LONG_PTR LRESULT;
-    typedef unsigned short WORD;
-    typedef unsigned short ATOM;
-    typedef unsigned char BYTE;
-    typedef DWORD COLORREF;
+user32 = nil
+kernel32 = nil
+psapi = nil
+gdi32 = nil
+winmm = nil
+shell32 = nil
+ffmpeg_shell32 = nil
+ffmpeg_kernel32 = nil
 
-    HWND GetForegroundWindow();
-    DWORD GetWindowThreadProcessId(HWND hWnd, DWORD* lpdwProcessId);
-    HANDLE OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId);
-    BOOL CloseHandle(HANDLE hObject);
-    DWORD GetModuleBaseNameA(HANDLE hProcess, void* hModule, char* lpBaseName, DWORD nSize);
-    int GetWindowTextA(HWND hWnd, char* lpString, int nMaxCount);
-    int GetWindowTextW(HWND hWnd, wchar_t* lpString, int nMaxCount);
-    BOOL QueryFullProcessImageNameA(HANDLE hProcess, DWORD dwFlags, char* lpExeName, DWORD* lpdwSize);
+if IS_WINDOWS and ffi then
+    local load_ok = pcall(function()
+        ffi.cdef[[
+            typedef unsigned long DWORD;
+            typedef void* HANDLE;
+            typedef void* HWND;
+            typedef int BOOL;
+            typedef const char* LPCSTR;
+            typedef const unsigned short* LPCWSTR;
+            typedef unsigned short* LPWSTR;
+            typedef unsigned short wchar_t;
+            typedef void* HINSTANCE;
+            typedef void* HICON;
+            typedef void* HCURSOR;
+            typedef void* HBRUSH;
+            typedef void* HDC;
+            typedef void* HFONT;
+            typedef void* HGDIOBJ;
+            typedef unsigned int UINT;
+            typedef long LONG;
+            typedef int64_t LONG_PTR;
+            typedef uint64_t UINT_PTR;
+            typedef UINT_PTR WPARAM;
+            typedef LONG_PTR LPARAM;
+            typedef LONG_PTR LRESULT;
+            typedef unsigned short WORD;
+            typedef unsigned short ATOM;
+            typedef unsigned char BYTE;
+            typedef DWORD COLORREF;
 
-    int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags, LPCSTR lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar);
-    int WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags, const wchar_t* lpWideCharStr, int cchWideChar, char* lpMultiByteStr, int cbMultiByte, const char* lpDefaultChar, int* lpUsedDefaultChar);
-    BOOL DeleteFileW(LPCWSTR lpFileName);
-    BOOL IsWindow(HWND hWnd);
+            HWND GetForegroundWindow();
+            DWORD GetWindowThreadProcessId(HWND hWnd, DWORD* lpdwProcessId);
+            HANDLE OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId);
+            BOOL CloseHandle(HANDLE hObject);
+            DWORD GetModuleBaseNameA(HANDLE hProcess, void* hModule, char* lpBaseName, DWORD nSize);
+            int GetWindowTextA(HWND hWnd, char* lpString, int nMaxCount);
+            int GetWindowTextW(HWND hWnd, wchar_t* lpString, int nMaxCount);
+            BOOL QueryFullProcessImageNameA(HANDLE hProcess, DWORD dwFlags, char* lpExeName, DWORD* lpdwSize);
 
-    // Toolhelp32 Snapshot
-    typedef struct tagPROCESSENTRY32 {
-        DWORD dwSize;
-        DWORD cntUsage;
-        DWORD th32ProcessID;
-        UINT_PTR th32DefaultHeapID;
-        DWORD th32ModuleID;
-        DWORD cntThreads;
-        DWORD th32ParentProcessID;
-        LONG  pcPriClassBase;
-        DWORD dwFlags;
-        char szExeFile[260];
-    } PROCESSENTRY32;
+            int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags, LPCSTR lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar);
+            int WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags, const wchar_t* lpWideCharStr, int cchWideChar, char* lpMultiByteStr, int cbMultiByte, const char* lpDefaultChar, int* lpUsedDefaultChar);
+            BOOL DeleteFileW(LPCWSTR lpFileName);
+            BOOL IsWindow(HWND hWnd);
 
-    HANDLE CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID);
-    BOOL Process32First(HANDLE hSnapshot, void* lppe);
-    BOOL Process32Next(HANDLE hSnapshot, void* lppe);
+            // Toolhelp32 Snapshot
+            typedef struct tagPROCESSENTRY32 {
+                DWORD dwSize;
+                DWORD cntUsage;
+                DWORD th32ProcessID;
+                UINT_PTR th32DefaultHeapID;
+                DWORD th32ModuleID;
+                DWORD cntThreads;
+                DWORD th32ParentProcessID;
+                LONG  pcPriClassBase;
+                DWORD dwFlags;
+                char szExeFile[260];
+            } PROCESSENTRY32;
 
-    typedef struct {
-        DWORD dwFileAttributes;
-        DWORD ftCreationTime_L; DWORD ftCreationTime_H;
-        DWORD ftLastAccessTime_L; DWORD ftLastAccessTime_H;
-        DWORD ftLastWriteTime_L; DWORD ftLastWriteTime_H;
-        DWORD nFileSizeHigh;
-        DWORD nFileSizeLow;
-        DWORD dwReserved0;
-        DWORD dwReserved1;
-        char cFileName[260];
-        char cAlternateFileName[14];
-    } WIN32_FIND_DATAA;
+            HANDLE CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID);
+            BOOL Process32First(HANDLE hSnapshot, void* lppe);
+            BOOL Process32Next(HANDLE hSnapshot, void* lppe);
 
-    HANDLE FindFirstFileA(const char* lpFileName, WIN32_FIND_DATAA* lpFindFileData);
-    BOOL FindClose(HANDLE hFindFile);
+            typedef struct {
+                DWORD dwFileAttributes;
+                DWORD ftCreationTime_L; DWORD ftCreationTime_H;
+                DWORD ftLastAccessTime_L; DWORD ftLastAccessTime_H;
+                DWORD ftLastWriteTime_L; DWORD ftLastWriteTime_H;
+                DWORD nFileSizeHigh;
+                DWORD nFileSizeLow;
+                DWORD dwReserved0;
+                DWORD dwReserved1;
+                char cFileName[260];
+                char cAlternateFileName[14];
+            } WIN32_FIND_DATAA;
 
-    // ═══════════════════════════════════════════════════════════════
-    // NOTIFICATION WINDOW API
-    // ═══════════════════════════════════════════════════════════════
+            HANDLE FindFirstFileA(LPCSTR lpFileName, void* lpFindFileData);
+            BOOL FindClose(HANDLE hFindFile);
 
-    typedef LRESULT (*WNDPROC)(HWND, UINT, WPARAM, LPARAM);
+            // Custom Notification Window API
+            typedef LRESULT (*WNDPROC)(HWND, UINT, WPARAM, LPARAM);
 
-    typedef struct {
-        UINT      cbSize;
-        UINT      style;
-        WNDPROC   lpfnWndProc;
-        int       cbClsExtra;
-        int       cbWndExtra;
-        HINSTANCE hInstance;
-        HICON     hIcon;
-        HCURSOR   hCursor;
-        HBRUSH    hbrBackground;
-        LPCSTR    lpszMenuName;
-        LPCSTR    lpszClassName;
-        HICON     hIconSm;
-    } WNDCLASSEXA;
+            typedef struct tagWNDCLASSA {
+                UINT      style;
+                WNDPROC   lpfnWndProc;
+                int       cbClsExtra;
+                int       cbWndExtra;
+                HINSTANCE hInstance;
+                HICON     hIcon;
+                HCURSOR   hCursor;
+                HBRUSH    hbrBackground;
+                LPCSTR    lpszMenuName;
+                LPCSTR    lpszClassName;
+            } WNDCLASSA;
 
-    typedef struct {
-        LONG left;
-        LONG top;
-        LONG right;
-        LONG bottom;
-    } RECT;
+            typedef struct tagRECT {
+                LONG left;
+                LONG top;
+                LONG right;
+                LONG bottom;
+            } RECT;
 
-    // Window functions
-    ATOM RegisterClassExA(const WNDCLASSEXA* lpwcx);
-    BOOL UnregisterClassA(LPCSTR lpClassName, HINSTANCE hInstance);
-    HWND CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWindowName,
-                         DWORD dwStyle, int X, int Y, int nWidth, int nHeight,
-                         HWND hWndParent, void* hMenu, HINSTANCE hInstance, void* lpParam);
-    BOOL DestroyWindow(HWND hWnd);
-    BOOL ShowWindow(HWND hWnd, int nCmdShow);
-    HWND FindWindowA(LPCSTR lpClassName, LPCSTR lpWindowName);
-    BOOL UpdateWindow(HWND hWnd);
-    BOOL SetWindowPos(HWND hWnd, HWND hWndInsertAfter, int X, int Y, int cx, int cy, UINT uFlags);
-    BOOL SetLayeredWindowAttributes(HWND hwnd, COLORREF crKey, BYTE bAlpha, DWORD dwFlags);
-    LRESULT DefWindowProcA(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam);
-    HINSTANCE GetModuleHandleA(LPCSTR lpModuleName);
-    int GetSystemMetrics(int nIndex);
-    BOOL InvalidateRect(HWND hWnd, const RECT* lpRect, BOOL bErase);
-    unsigned int WinExec(LPCSTR lpCmdLine, unsigned int uCmdShow);
+            typedef struct tagPAINTSTRUCT {
+                HDC  hdc;
+                BOOL fErase;
+                RECT rcPaint;
+                BOOL fRestore;
+                BOOL fIncUpdate;
+                BYTE rgbReserved[32];
+            } PAINTSTRUCT;
 
-    // Paint structure for WM_PAINT
-    typedef struct {
-        HDC  hdc;
-        BOOL fErase;
-        RECT rcPaint;
-        BOOL fRestore;
-        BOOL fIncUpdate;
-        BYTE rgbReserved[32];
-    } PAINTSTRUCT;
+            ATOM RegisterClassA(const WNDCLASSA* lpWndClass);
+            BOOL UnregisterClassA(LPCSTR lpClassName, HINSTANCE hInstance);
+            HWND CreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWindowName, DWORD dwStyle, int X, int Y, int nWidth, int nHeight, HWND hWndParent, void* hMenu, HINSTANCE hInstance, void* lpParam);
+            BOOL DestroyWindow(HWND hWnd);
+            BOOL ShowWindow(HWND hWnd, int nCmdShow);
+            BOOL SetLayeredWindowAttributes(HWND hwnd, COLORREF crKey, BYTE bAlpha, DWORD dwFlags);
+            BOOL SetWindowPos(HWND hWnd, HWND hWndInsertAfter, int X, int Y, int cx, int cy, UINT uFlags);
+            LRESULT DefWindowProcA(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam);
 
-    // GDI functions for drawing
-    HDC GetDC(HWND hWnd);
-    int ReleaseDC(HWND hWnd, HDC hDC);
-    HDC BeginPaint(HWND hWnd, PAINTSTRUCT* lpPaint);
-    BOOL EndPaint(HWND hWnd, const PAINTSTRUCT* lpPaint);
-    HFONT CreateFontA(int cHeight, int cWidth, int cEscapement, int cOrientation,
-                      int cWeight, DWORD bItalic, DWORD bUnderline, DWORD bStrikeOut,
-                      DWORD iCharSet, DWORD iOutPrecision, DWORD iClipPrecision,
-                      DWORD iQuality, DWORD iPitchAndFamily, LPCSTR pszFaceName);
-    HGDIOBJ SelectObject(HDC hdc, HGDIOBJ h);
-    BOOL DeleteObject(HGDIOBJ ho);
-    int SetBkMode(HDC hdc, int mode);
-    COLORREF SetTextColor(HDC hdc, COLORREF color);
-    BOOL TextOutA(HDC hdc, int x, int y, LPCSTR lpString, int c);
-    int DrawTextA(HDC hdc, LPCSTR lpchText, int cchText, RECT* lprc, UINT format);
-    int DrawTextW(HDC hdc, LPCWSTR lpchText, int cchText, RECT* lprc, UINT format);
-    HBRUSH CreateSolidBrush(COLORREF color);
-    int FillRect(HDC hDC, const RECT* lprc, HBRUSH hbr);
-    BOOL GetClientRect(HWND hWnd, RECT* lpRect);
+            // GDI
+            HDC GetDC(HWND hWnd);
+            int ReleaseDC(HWND hWnd, HDC hDC);
+            HDC BeginPaint(HWND hWnd, PAINTSTRUCT* lpPaint);
+            BOOL EndPaint(HWND hWnd, const PAINTSTRUCT* lpPaint);
 
-    // Sound function
-    BOOL PlaySoundA(LPCSTR pszSound, HINSTANCE hmod, DWORD fdwSound);
+            HFONT CreateFontA(int cHeight, int cWidth, int cEscapement, int cOrientation,
+                              int cWeight, DWORD bItalic, DWORD bUnderline, DWORD bStrikeOut,
+                              DWORD iCharSet, DWORD iOutPrecision, DWORD iClipPrecision,
+                              DWORD iQuality, DWORD iPitchAndFamily, LPCSTR pszFaceName);
+            HGDIOBJ SelectObject(HDC hdc, HGDIOBJ h);
+            BOOL DeleteObject(HGDIOBJ ho);
+            int SetBkMode(HDC hdc, int mode);
+            COLORREF SetTextColor(HDC hdc, COLORREF color);
+            BOOL TextOutA(HDC hdc, int x, int y, LPCSTR lpString, int c);
+            int DrawTextA(HDC hdc, LPCSTR lpchText, int cchText, RECT* lprc, UINT format);
+            int DrawTextW(HDC hdc, LPCWSTR lpchText, int cchText, RECT* lprc, UINT format);
+            HBRUSH CreateSolidBrush(COLORREF color);
+            int FillRect(HDC hDC, const RECT* lprc, HBRUSH hbr);
+            BOOL GetClientRect(HWND hWnd, RECT* lpRect);
 
-    // Shell function for fullscreen detection
-    long SHQueryUserNotificationState(int* pquns);
-]]
+            // Sound function
+            BOOL PlaySoundA(LPCSTR pszSound, HINSTANCE hmod, DWORD fdwSound);
 
-local user32 = ffi.load("user32")
-local kernel32 = ffi.load("kernel32")
-local psapi = ffi.load("psapi")
-local gdi32 = ffi.load("gdi32")
+            // Shell function for fullscreen detection
+            long SHQueryUserNotificationState(int* pquns);
 
--- Try to load optional libraries
-local winmm = nil
-pcall(function() winmm = ffi.load("winmm") end)
+            // Window search & module handle
+            HWND FindWindowA(LPCSTR lpClassName, LPCSTR lpWindowName);
+            HINSTANCE GetModuleHandleA(LPCSTR lpModuleName);
+            int GetSystemMetrics(int nIndex);
+            UINT WinExec(LPCSTR lpCmdLine, UINT uCmdShow);
 
-local shell32 = nil
-pcall(function() shell32 = ffi.load("shell32") end)
+            // Extended window class (used by notification system)
+            typedef struct tagWNDCLASSEXA {
+                UINT      cbSize;
+                UINT      style;
+                WNDPROC   lpfnWndProc;
+                int       cbClsExtra;
+                int       cbWndExtra;
+                HINSTANCE hInstance;
+                HICON     hIcon;
+                HCURSOR   hCursor;
+                HBRUSH    hbrBackground;
+                LPCSTR    lpszMenuName;
+                LPCSTR    lpszClassName;
+                HICON     hIconSm;
+            } WNDCLASSEXA;
+
+            ATOM RegisterClassExA(const WNDCLASSEXA* lpwcx);
+            
+            // FFMpeg ShellExecute API
+            typedef struct {
+                DWORD cbSize;
+                DWORD fMask;
+                HWND hwnd;
+                LPCSTR lpVerb;
+                LPCSTR lpFile;
+                LPCSTR lpParameters;
+                LPCSTR lpDirectory;
+                int nShow;
+                HINSTANCE hInstApp;
+                void* lpIDList;
+                LPCSTR lpClass;
+                void* hkeyClass;
+                DWORD dwHotKey;
+                union { HANDLE hIcon; HANDLE hMonitor; } DUMMYUNIONNAME;
+                HANDLE hProcess;
+            } SHELLEXECUTEINFOA;
+
+            BOOL ShellExecuteExA(SHELLEXECUTEINFOA *pExecInfo);
+            DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+        ]]
+
+        user32 = ffi.load("user32")
+        kernel32 = ffi.load("kernel32")
+        psapi = ffi.load("psapi")
+        gdi32 = ffi.load("gdi32")
+        ffmpeg_shell32 = ffi.load("shell32")
+        ffmpeg_kernel32 = kernel32
+        pcall(function() winmm = ffi.load("winmm") end)
+        pcall(function() shell32 = ffi.load("shell32") end)
+    end)
+    WINDOWS_FFI_AVAILABLE = load_ok and user32 ~= nil
+end
+
+VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
 
 local PROCESS_QUERY_INFORMATION = 0x0400
 local PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -2970,6 +3094,7 @@ local WS_EX_NOACTIVATE = 0x08000000
 -- Other constants
 local SW_HIDE = 0
 local SW_SHOWNOACTIVATE = 4
+local SEE_MASK_NOCLOSEPROCESS = 0x00000040
 local LWA_ALPHA = 0x00000002
 local SM_CXSCREEN = 0
 local SM_CYSCREEN = 1
@@ -3057,7 +3182,7 @@ local notification_class_atom = nil
 
 -- Update checker state
 local update_status_msg = "v" .. VERSION
-local GITHUB_VERSION_FILE = os.getenv("TEMP") .. "\\smart_replay_mover_update.txt"
+local GITHUB_VERSION_FILE = join_path(TEMP_DIR, "smart_replay_mover_update.txt")
 
 local notification_destroying = false
 
@@ -3075,6 +3200,7 @@ local last_font_scale = 100             -- Track scale changes to rebuild fonts
 
 -- Check if app is in exclusive fullscreen mode
 local function is_exclusive_fullscreen()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     if shell32 == nil then return false end
 
     local ok, result = pcall(function()
@@ -3091,6 +3217,7 @@ end
 
 -- Find and destroy any orphaned notification windows
 local function destroy_orphaned_notifications()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     pcall(function()
         -- Only target OUR specific window class to avoid instability
         for i = 1, 10 do
@@ -3113,6 +3240,7 @@ end
 
 -- Hide current notification (immediate)
 local function hide_notification()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     if notification_destroying then return end
 
     local hwnd = notification_hwnd
@@ -3137,6 +3265,7 @@ end
 
 -- Ensure fonts are created (cached)
 local function ensure_fonts()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     -- Rebuild fonts if scale changed
     if last_font_scale ~= CONFIG.notification_scale then
         if cached_title_font then gdi32.DeleteObject(cached_title_font); cached_title_font = nil end
@@ -3164,6 +3293,7 @@ end
 
 -- Draw notification content to HDC
 local function draw_notification_to_hdc(hdc, hwnd)
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     if hdc == nil or hwnd == nil then return end
 
     local rect = ffi.new("RECT")
@@ -3233,6 +3363,7 @@ end
 
 -- Draw notification content (wrapper)
 local function draw_notification_content()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     if notification_hwnd == nil then return end
 
     -- Enhanced safety: ensure we check if window still exists
@@ -3253,6 +3384,7 @@ end
 
 -- Register custom notification window class
 local function register_notification_class()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     if notification_class_atom ~= nil then
         return true
     end
@@ -3309,6 +3441,7 @@ end
 
 -- Unregister custom notification window class
 local function unregister_notification_class()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     if notification_wndproc ~= nil then
         notification_wndproc = nil
     end
@@ -3330,6 +3463,11 @@ end
 
 -- Animation timer callback
 local function notification_timer_callback()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then
+        notification_timer_should_stop = false
+        obs.timer_remove(notification_timer_callback)
+        return
+    end
     if notification_timer_should_stop then
         notification_timer_should_stop = false
         obs.timer_remove(notification_timer_callback)
@@ -3434,7 +3572,21 @@ end
 
 -- Show notification popup
 local function show_notification(title, message)
-    if not CONFIG.show_notifications then return end
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then
+        if not IS_WINDOWS and command_exists("notify-send") then
+            local timeout_ms = math.max(1000, math.floor((CONFIG.notification_duration or 3.0) * 1000))
+            local cmd = string.format(
+                "notify-send -a %s -t %d %s %s >/dev/null 2>&1 &",
+                quote_shell_arg("Smart Replay Mover"),
+                timeout_ms,
+                quote_shell_arg(title or "Notification"),
+                quote_shell_arg(message or "")
+            )
+            run_shell_command(cmd)
+            dbg("Linux notification triggered: " .. tostring(title) .. " | " .. tostring(message))
+        end
+        return
+    end
 
     if is_exclusive_fullscreen() then
         dbg("Exclusive fullscreen detected - skipping popup")
@@ -3529,6 +3681,26 @@ end
 -- Play notification sound
 local function play_notification_sound()
     if not CONFIG.play_sound then return end
+
+    if not WINDOWS_FFI_AVAILABLE then
+        if SCRIPT_DIR and SCRIPT_DIR ~= "" then
+            local sound_file = CONFIG.use_quiet_sound and "notification_sound_silent.wav" or "notification_sound.wav"
+            local full_path = SCRIPT_DIR .. sound_file
+            if obs.os_file_exists(full_path) then
+                if command_exists("paplay") then
+                    run_shell_command("paplay " .. quote_shell_arg(full_path) .. " >/dev/null 2>&1 &")
+                    dbg("Playing Linux notification sound via paplay: " .. sound_file)
+                    return
+                end
+                if command_exists("pw-play") then
+                    run_shell_command("pw-play " .. quote_shell_arg(full_path) .. " >/dev/null 2>&1 &")
+                    dbg("Playing Linux notification sound via pw-play: " .. sound_file)
+                    return
+                end
+            end
+        end
+        return
+    end
     if winmm == nil then return end
 
     pcall(function()
@@ -3595,6 +3767,7 @@ end
 
 -- Cleanup notification resources
 local function cleanup_notifications()
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     notification_timer_should_stop = true
     obs.timer_remove(notification_timer_callback)
 
@@ -3834,6 +4007,7 @@ end
 -- ============================================================================
 
 local function get_active_process()
+    if not WINDOWS_FFI_AVAILABLE then return nil end
     local ok, result = pcall(function()
         local hwnd = user32.GetForegroundWindow()
         if not hwnd then return nil end
@@ -3895,6 +4069,7 @@ end
 local MAX_UTF8_BUFFER = 8192
 
 local function wide_to_utf8(wide_buffer, wide_len)
+    if not WINDOWS_FFI_AVAILABLE then return nil end
     if wide_len <= 0 or wide_len > MAX_WIDE_BUFFER then return nil end
 
     local ok, result = pcall(function()
@@ -3914,6 +4089,7 @@ local function wide_to_utf8(wide_buffer, wide_len)
 end
 
 local function get_window_title()
+    if not WINDOWS_FFI_AVAILABLE then return nil end
     local ok, result = pcall(function()
         local hwnd = user32.GetForegroundWindow()
         if not hwnd then return nil end
@@ -3936,73 +4112,131 @@ local function get_window_title()
     return ok and result or nil
 end
 
+
+local normalize_detected_process_name
+
+function is_generic_steam_app_identifier(value)
+    if not value or value == "" then return false end
+    local lower = string.lower(tostring(value))
+    local base = lower:gsub("%.desktop$", "")
+    return string.match(base, "^steam_app_%d+$") ~= nil
+end
+
+function get_active_kwin_window_info()
+    if IS_WINDOWS or os.getenv("XDG_CURRENT_DESKTOP") ~= "KDE" or not command_exists("gdbus") then return nil, nil end
+    local output = capture_command_output("gdbus call --session --dest org.kde.KWin --object-path /KWin --method org.kde.KWin.queryWindowInfo")
+    if not output then return nil, nil end
+    local caption = extract_quoted_value(output, "caption")
+    local resource_class = extract_quoted_value(output, "resourceClass")
+    local resource_name = extract_quoted_value(output, "resourceName")
+    local desktop_file = extract_quoted_value(output, "desktopFile")
+    local process = normalize_detected_process_name(resource_class) or normalize_detected_process_name(resource_name) or normalize_detected_process_name(desktop_file)
+    return process, caption
+end
+
+function get_active_x11_window_info()
+    if IS_WINDOWS or not os.getenv("DISPLAY") or not command_exists("xprop") then return nil, nil end
+    local root = capture_command_output("xprop -root _NET_ACTIVE_WINDOW")
+    if not root then return nil, nil end
+    local window_id = string.match(root, "window id # (0x%x+)")
+    if not window_id or window_id == "0x0" then return nil, nil end
+    local props = capture_command_output("xprop -id " .. window_id .. " WM_CLASS _NET_WM_NAME WM_NAME")
+    if not props then return nil, nil end
+    local title = string.match(props, '_NET_WM_NAME%([^%)]*%) = "([^"]+)"') or string.match(props, 'WM_NAME%([^%)]*%) = "([^"]+)"')
+    local class_a, class_b = string.match(props, 'WM_CLASS%([^%)]*%) = "([^"]+)", "([^"]+)"')
+    local process = normalize_detected_process_name(class_b) or normalize_detected_process_name(class_a)
+    return process, title
+end
+
+function get_active_linux_window_info()
+    local process, title = get_active_x11_window_info()
+    if process or title then return process, title end
+    if not os.getenv("DISPLAY") then return get_active_kwin_window_info() end
+    return nil, nil
+end
+
+normalize_detected_process_name = function(value)
+    if not value or value == "" then return nil end
+    local cleaned = tostring(value)
+    cleaned = string.gsub(cleaned, "^%s+", "")
+    cleaned = string.gsub(cleaned, "%s+$", "")
+    if cleaned == "" then return nil end
+    cleaned = string.match(cleaned, "([^/\\]+)$") or cleaned
+    cleaned = string.gsub(cleaned, "%.[eE][xX][eE]$", "")
+    cleaned = string.gsub(cleaned, "%.[Aa][Pp][Pp][Ii][Mm][Aa][Gg][Ee]$", "")
+    return cleaned
+end
+
+function get_obs_window_candidate(window_value)
+    if not window_value or window_value == "" then return nil end
+    local last_segment = nil
+    for segment in string.gmatch(window_value, "[^:]+") do last_segment = segment end
+    if not last_segment or last_segment == "" then last_segment = window_value end
+    return normalize_detected_process_name(last_segment)
+end
+
+function get_obs_window_value(settings)
+    if not settings then return nil end
+    local keys = { "window", "title", "window_name" }
+    for _, key in ipairs(keys) do
+        local value = obs.obs_data_get_string(settings, key)
+        if value and value ~= "" then return value, key end
+    end
+    return nil
+end
+
+function get_obs_process_candidate(window_value)
+    if not window_value or window_value == "" then return nil end
+    local lower = string.lower(window_value)
+    if string.find(lower, "/", 1, true) or string.find(lower, "\\", 1, true) or string.find(lower, ".exe", 1, true) or string.find(lower, ".appimage", 1, true) then
+        return get_obs_window_candidate(window_value)
+    end
+    return nil
+end
+
+function is_portable_obs_source(source_id)
+    if not source_id or source_id == "" then return false end
+    local types = {game_capture=true, window_capture=true, xcomposite_input=true, ["pipewire-window-capture-source"]=true, ["pipewire-desktop-capture-source"]=true, screen_capture=true, xshm_input=true}
+    return types[source_id] or false
+end
+
 local function find_game_in_obs()
-    local ok, result = pcall(function()
+    local ok, result, result_window = pcall(function()
         local sources = obs.obs_enum_sources()
-        if not sources then
-            dbg("find_game_in_obs: No sources found")
-            return nil
-        end
-
+        if not sources then return nil end
         local found = nil
-
+        local found_window = nil
         for _, source in ipairs(sources) do
             local id = obs.obs_source_get_id(source)
-            local name = obs.obs_source_get_name(source)
-
-            if id == "game_capture" then
+            local portable = not WINDOWS_FFI_AVAILABLE and is_portable_obs_source(id)
+            if id == "game_capture" or portable then
                 local settings = obs.obs_source_get_settings(source)
                 if settings then
                     local window = obs.obs_data_get_string(settings, "window")
-                    local mode = obs.obs_data_get_string(settings, "capture_mode")
-                    obs.obs_data_release(settings)
-
-                    dbg("Game Capture '" .. (name or "?") .. "': mode=" .. (mode or "nil") .. ", window=" .. (window or "nil"))
-
+                    if not window or window == "" then window = obs.obs_data_get_string(settings, "title") end
+                    
                     if window and window ~= "" then
-                        local exe = string.match(window, "([^:]+)$")
-                        if exe then
-                            found = string.gsub(exe, "%.[eE][xX][eE]$", "")
-                            dbg("Found game from window field: " .. found)
+                        if not found_window then found_window = window end
+                        local exe = get_obs_process_candidate(window)
+                        if exe and not is_ignored(exe) then
+                            found = exe
+                            obs.obs_data_release(settings)
                             break
                         end
                     end
-
-                    if not found then
-                        local proc_handler = obs.obs_source_get_proc_handler(source)
-                        if proc_handler then
-                            local cd = obs.calldata_create()
-                            if cd then
-                                local call_ok = pcall(function()
-                                    if obs.proc_handler_call(proc_handler, "get_hooked", cd) then
-                                        local hooked = obs.calldata_string(cd, "hooked_exe")
-                                        if hooked and hooked ~= "" then
-                                            found = string.gsub(hooked, "%.[eE][xX][eE]$", "")
-                                            dbg("Found game from hooked process: " .. found)
-                                        end
-                                    end
-                                end)
-                                obs.calldata_destroy(cd)
-                            end
-                        end
-                    end
+                    obs.obs_data_release(settings)
                 end
             end
         end
-
         obs.source_list_release(sources)
-
-        if not found then
-            dbg("find_game_in_obs: No game found in any Game Capture source")
-        end
-
-        return found
+        return found, found_window
     end)
-
-    return ok and result or nil
+    if not ok then return nil, nil end
+    return result, result_window
 end
 
 local function get_background_game()
+    if not WINDOWS_FFI_AVAILABLE then return nil end
     local ok, result = pcall(function()
         local snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         if is_invalid_handle(snapshot) then return nil end
@@ -4036,49 +4270,41 @@ end
 -- Detect active game
 -- Returns: process_or_game_name, window_title, skip_window_fallback
 local function detect_game()
+    if not WINDOWS_FFI_AVAILABLE then
+        local linux_process, linux_title = get_active_linux_window_info()
+        if linux_process and is_ignored(linux_process) then return nil, linux_title, true end
+        if linux_process or linux_title then return linux_process, linux_title, false end
+        
+        local obs_game, obs_window = find_game_in_obs()
+        if obs_game and not is_ignored(obs_game) then return obs_game, obs_window, false end
+        if obs_window and obs_window ~= "" then return nil, obs_window, false end
+        return nil, nil, false
+    end
+
     local process = get_active_process()
     local title = get_window_title()
     local window_title_for_matching = title
     local active_ignored = false
 
-    -- 1. Check if active process is in ignore list
     if process and is_ignored(process) then
-        dbg("Active process ignored: " .. process)
         active_ignored = true
     end
 
-    -- 2. Try active window process
     if process and not active_ignored then
-        dbg("Detected from active process: " .. process)
-        if title then
-            dbg("Window title available: " .. title)
-        end
         return process, window_title_for_matching, false
     end
 
-    -- 3. Try OBS game capture source
     local obs_game = find_game_in_obs()
     if obs_game and not is_ignored(obs_game) then
-        dbg("Detected from OBS Game Capture: " .. obs_game)
         return obs_game, window_title_for_matching, false
     end
 
-    -- 4. Try background process scan (Fallback)
-    if CONFIG.scan_all_processes then
+    if WINDOWS_FFI_AVAILABLE and CONFIG.scan_all_processes then
         local bg_game = get_background_game()
-        if bg_game then
-            dbg("Detected from running process scan (fallback): " .. bg_game)
-            return bg_game, window_title_for_matching, false
-        end
+        if bg_game then return bg_game, window_title_for_matching, false end
     end
 
-    -- 5. Nothing detected. Determine if we should skip window title fallback.
-    if active_ignored then
-        dbg("No game detected, skipping window title fallback (active process was ignored)")
-        return nil, window_title_for_matching, true
-    end
-
-    dbg("No game detected, will try window title fallback")
+    if active_ignored then return nil, window_title_for_matching, true end
     return nil, window_title_for_matching, false
 end
 
@@ -4087,6 +4313,7 @@ end
 -- ============================================================================
 
 local function get_existing_folder(root, name)
+    if not WINDOWS_FFI_AVAILABLE then return name end
     local ok, result = pcall(function()
         local search = root .. "/" .. name
         search = string.gsub(search, "/", "\\")
@@ -4108,6 +4335,7 @@ local function get_existing_folder(root, name)
 end
 
 local function delete_file(path)
+    if not WINDOWS_FFI_AVAILABLE then os.remove(path) return end
     local ok, err = pcall(function()
         path = string.gsub(path, "/", "\\")
         local len = kernel32.MultiByteToWideChar(CP_UTF8, 0, path, -1, nil, 0)
@@ -4142,6 +4370,13 @@ end
 
 -- Get file size
 local function get_file_size(path)
+    if not WINDOWS_FFI_AVAILABLE then
+        local file = io.open(path, "rb")
+        if not file then return 0 end
+        local size = file:seek("end") or 0
+        file:close()
+        return size
+    end
     local ok, result = pcall(function()
         path = string.gsub(path, "/", "\\")
         local data = ffi.new("WIN32_FIND_DATAA")
@@ -4161,37 +4396,6 @@ end
 -- FFMPEG SUPPORT (FFI / Sync ShellExecuteEx Method)
 -- ============================================================================
 
--- NOTE: HANDLE, HWND, HINSTANCE, DWORD, BOOL, UINT are already declared in the
--- WINDOWS API section above. Only new struct/function declarations go here.
-ffi.cdef[[
-    typedef struct {
-        DWORD cbSize;
-        DWORD fMask;
-        HWND hwnd;
-        const char* lpVerb;
-        const char* lpFile;
-        const char* lpParameters;
-        const char* lpDirectory;
-        int nShow;
-        HINSTANCE hInstApp;
-        void* lpIDList;
-        const char* lpClass;
-        HANDLE hkeyClass;
-        DWORD dwHotKey;
-        union {
-            HANDLE hIcon;
-            HANDLE hMonitor;
-        } DUMMYUNIONNAME;
-        HANDLE hProcess;
-    } SHELLEXECUTEINFOA;
-
-    int ShellExecuteExA(SHELLEXECUTEINFOA* pExecInfo);
-    DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
-]]
-
-local shell32 = ffi.load("shell32")
-local kernel32 = ffi.load("kernel32")
-
 -- Constants
 local SEE_MASK_NOCLOSEPROCESS = 0x00000040
 local SW_HIDE = 0
@@ -4208,8 +4412,19 @@ local function is_video_file(path)
 end
 
 local function run_task_sync_hidden(commands, unique_id)
-    local temp_dir = os.getenv("TEMP") or os.getenv("TMP") or "C:\\Temp"
-    local bat_path = temp_dir .. "\\srm_sync_" .. unique_id .. ".bat"
+    if not WINDOWS_FFI_AVAILABLE then
+        for _, cmd in ipairs(commands) do
+            -- Redirect stderr to /dev/null for clean execution
+            local full_cmd = cmd .. " 2>/dev/null"
+            dbg("Linux exec: " .. cmd)
+            if not run_shell_command(full_cmd) then
+                log("ERROR: Linux command failed: " .. cmd)
+                return false
+            end
+        end
+        return true
+    end
+    local bat_path = join_path(TEMP_DIR, "srm_sync_" .. unique_id .. ".bat")
 
     local f_bat = io.open(bat_path, "w")
     if not f_bat then
@@ -4265,11 +4480,34 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
 
     -- Path correction
     local lower_path = string.lower(ffmpeg_path)
-    if not string.match(lower_path, "%.exe$") then
-        local try_bin = ffmpeg_path .. "/ffmpeg.exe"
-        local try_bin_sub = ffmpeg_path .. "/bin/ffmpeg.exe"
-        if obs.os_file_exists(try_bin) then ffmpeg_path = try_bin
-        elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub end
+    if IS_WINDOWS then
+        if not string.match(lower_path, "%.exe$") then
+            local try_bin = ffmpeg_path .. "/ffmpeg.exe"
+            local try_bin_sub = ffmpeg_path .. "/bin/ffmpeg.exe"
+            if obs.os_file_exists(try_bin) then ffmpeg_path = try_bin
+            elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub end
+        end
+    else
+        -- On Linux, allow bare "ffmpeg" (found via PATH) or explicit path
+        if ffmpeg_path == "ffmpeg" then
+            -- Use system ffmpeg from PATH — check if it exists
+            if not command_exists("ffmpeg") then
+                log("ERROR: ffmpeg not found in PATH")
+                return false
+            end
+        elseif not string.match(lower_path, "/ffmpeg$") then
+            local try_bin = ffmpeg_path .. "/ffmpeg"
+            local try_bin_sub = ffmpeg_path .. "/bin/ffmpeg"
+            if obs.os_file_exists(try_bin) then ffmpeg_path = try_bin
+            elseif obs.os_file_exists(try_bin_sub) then ffmpeg_path = try_bin_sub
+            else
+                log("ERROR: ffmpeg not found at: " .. ffmpeg_path)
+                return false
+            end
+        elseif not obs.os_file_exists(ffmpeg_path) then
+            log("ERROR: ffmpeg not found at: " .. ffmpeg_path)
+            return false
+        end
     end
 
     math.randomseed(os.time() + (os.clock() * 1000))
@@ -4277,9 +4515,20 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     local temp_thumb = src .. "." .. unique_id .. ".thumb.jpg"
     
     local commands = {}
+
+    -- Build commands with platform-appropriate quoting
+    -- Windows: double quotes work in .bat files
+    -- Linux: use shell-safe single-quote escaping
+    local function q(path)
+        if IS_WINDOWS then
+            return '"' .. path .. '"'
+        else
+            return quote_shell_arg(path)
+        end
+    end
     
-    table.insert(commands, string.format('"%s" -sseof -%.1f -i "%s" -vframes 1 -q:v 2 -y "%s"',
-        ffmpeg_path, offset, src, temp_thumb))
+    table.insert(commands, string.format('%s -sseof -%.1f -i %s -vframes 1 -q:v 2 -y %s',
+        q(ffmpeg_path), offset, q(src), q(temp_thumb)))
         
     -- Embed and Move
     -- Logic depends on container type:
@@ -4290,17 +4539,11 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     local cmd_embed = ""
     
     if is_mkv then
-        -- MKV Strategy: Use -attach for true Matroska attachments
-        -- -c copy: Copy video/audio streams
-        -- -attach: Attach the thumbnail file
-        -- -metadata:s:t:0 mimetype: Set MIME type for the FIRST attachment stream explicitly
-        -- -metadata:s:t:0 filename: Naming it "cover.jpg" or "cover.png" helps detection
-        cmd_embed = string.format('"%s" -i "%s" -map 0 -c copy -attach "%s" -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename="cover.jpg" -y "%s"',
-            ffmpeg_path, src, temp_thumb, target)
+        cmd_embed = string.format('%s -i %s -map 0 -c copy -attach %s -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename=cover.jpg -y %s',
+            q(ffmpeg_path), q(src), q(temp_thumb), q(target))
     else
-        -- MP4/Other Strategy: Use stream mapping
-        cmd_embed = string.format('"%s" -i "%s" -i "%s" -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title="Cover Art" -y "%s"',
-            ffmpeg_path, src, temp_thumb, target)
+        cmd_embed = string.format('%s -i %s -i %s -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title=Cover_Art -y %s',
+            q(ffmpeg_path), q(src), q(temp_thumb), q(target))
     end
         
     table.insert(commands, cmd_embed)
@@ -4909,8 +5152,8 @@ local function add_custom_mapping(props, p)
 end
 
 local function get_default_export_path()
-    local home = os.getenv("USERPROFILE") or os.getenv("HOME") or "C:"
-    return home .. "\\smart_replay_custom_names.txt"
+    local home = os.getenv("USERPROFILE") or os.getenv("HOME") or TEMP_DIR
+    return join_path(home, "smart_replay_custom_names.txt")
 end
 
 local function export_custom_names(path)
@@ -5360,6 +5603,7 @@ function script_properties()
     obs.obs_properties_add_button(props, "refresh_status_btn", "🔄 Refresh Status", refresh_update_status)
     obs.obs_properties_add_text(props, "refresh_hint", "Click after ~4 seconds to see update status", obs.OBS_TEXT_INFO)
 
+
     -- FILE NAMING GROUP
     local naming_group = obs.obs_properties_create()
     obs.obs_properties_add_bool(naming_group, "add_game_prefix", "✏️  Add game name prefix to filename")
@@ -5429,6 +5673,54 @@ function script_properties()
     -- TOOLS GROUP
     local tools_group = obs.obs_properties_create()
     obs.obs_properties_add_bool(tools_group, "debug_mode", "🐛  Show debug messages in console")
+
+    -- OS MODE SELECTOR (inside Tools group)
+    local os_list = obs.obs_properties_add_list(tools_group, "os_mode",
+        "🖥️  Operating System Mode",
+        obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(os_list, "Auto-Detect", "auto")
+    obs.obs_property_list_add_string(os_list, "Windows", "windows")
+    obs.obs_property_list_add_string(os_list, "Linux", "linux")
+
+    obs.obs_property_set_modified_callback(os_list, function(props, prop, settings)
+        local mode = obs.obs_data_get_string(settings, "os_mode")
+        local is_win = IS_WINDOWS_REAL
+        if mode == "windows" then is_win = true
+        elseif mode == "linux" then is_win = false end
+
+        -- Helper to set visibility safely
+        local function set_vis(name, visible)
+            local p = obs.obs_properties_get(props, name)
+            if p then obs.obs_property_set_visible(p, visible) end
+        end
+
+        -- Windows-only: process scanning (uses Toolhelp32)
+        set_vis("scan_all_processes", is_win)
+        set_vis("scan_all_processes_help", is_win)
+
+        -- Windows-only: Win32 visual popup settings
+        set_vis("notification_scale", is_win)
+        set_vis("notification_position", is_win)
+        set_vis("notify_help", is_win)
+
+        -- Windows-only: update checker (uses powershell + WinExec)
+        set_vis("refresh_status_btn", is_win)
+        set_vis("refresh_hint", is_win)
+        set_vis("open_releases_btn", is_win)
+
+        -- Windows-only: FFmpeg path filter mentions .exe
+        local ffmpeg_prop = obs.obs_properties_get(props, "ffmpeg_path")
+        if ffmpeg_prop then
+            if is_win then
+                obs.obs_property_set_description(ffmpeg_prop, "\u{1F4C2}  FFmpeg Executable Path (ffmpeg.exe)")
+            else
+                obs.obs_property_set_description(ffmpeg_prop, "\u{1F4C2}  FFmpeg Path (/usr/bin/ffmpeg)")
+            end
+        end
+
+        return true
+    end)
+
     obs.obs_properties_add_group(props, "tools_section", "🔧  TOOLS & DEBUG", obs.OBS_GROUP_NORMAL, tools_group)
 
     -- FFMPEG GROUP (Advanced)
@@ -5439,10 +5731,27 @@ function script_properties()
     obs.obs_properties_add_text(ffmpeg_group, "ffmpeg_info", "Note: Requires FFmpeg installed. Adds processing time regarding disk speed.", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "ffmpeg_section", "🎬  FFMPEG THUMBNAILS (Advanced)", obs.OBS_GROUP_NORMAL, ffmpeg_group)
 
+    -- Apply initial visibility based on detected OS
+    if not IS_WINDOWS then
+        local function hide(name)
+            local p = obs.obs_properties_get(props, name)
+            if p then obs.obs_property_set_visible(p, false) end
+        end
+        hide("scan_all_processes")
+        hide("scan_all_processes_help")
+        hide("notification_scale")
+        hide("notification_position")
+        hide("notify_help")
+        hide("refresh_status_btn")
+        hide("refresh_hint")
+        hide("open_releases_btn")
+    end
+
     return props
 end
 
 function script_defaults(settings)
+    obs.obs_data_set_default_string(settings, "os_mode", "auto")
     obs.obs_data_set_default_bool(settings, "add_game_prefix", true)
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
     obs.obs_data_set_default_bool(settings, "organize_recordings", true)
@@ -5466,6 +5775,14 @@ function script_defaults(settings)
 end
 
 function script_update(settings)
+    CONFIG.os_mode = obs.obs_data_get_string(settings, "os_mode")
+    if CONFIG.os_mode == "windows" then IS_WINDOWS = true
+    elseif CONFIG.os_mode == "linux" then IS_WINDOWS = false
+    else IS_WINDOWS = IS_WINDOWS_REAL end
+    
+    WINDOWS_FFI_AVAILABLE = IS_WINDOWS and ffi ~= nil and user32 ~= nil
+    VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
+
     read_config(settings)
     
     load_custom_names(settings)
@@ -5613,7 +5930,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.8.2
+-- END OF SCRIPT v2.9.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
