@@ -8,7 +8,9 @@
 # Usage:  chmod +x install_linux_deps.sh && ./install_linux_deps.sh
 # ============================================================================
 
-set -e
+
+# Removed 'set -e' to handle errors gracefully manually
+# set -e 
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -30,7 +32,9 @@ INSTALL_CMD=""
 
 if command -v apt &>/dev/null; then
     PKG_MANAGER="apt"
-    INSTALL_CMD="sudo apt install -y"
+    INSTALL_CMD="sudo apt-get install -y"
+    echo -e "${YELLOW}📦 Updating package lists (sudo apt-get update)...${NC}"
+    sudo apt-get update
 elif command -v dnf &>/dev/null; then
     PKG_MANAGER="dnf"
     INSTALL_CMD="sudo dnf install -y"
@@ -101,13 +105,13 @@ install_if_missing() {
 
     if command -v "$cmd_name" &>/dev/null; then
         echo -e "  ${GREEN}✅ ${description}${NC} — already installed ($(command -v $cmd_name))"
-        ((SKIPPED++))
+        SKIPPED=$((SKIPPED + 1))
     else
         echo -e "  ${YELLOW}📦 Installing ${description}${NC} (${pkg_name})..."
         $INSTALL_CMD "$pkg_name"
         if command -v "$cmd_name" &>/dev/null; then
             echo -e "  ${GREEN}✅ ${description} installed successfully!${NC}"
-            ((INSTALLED++))
+            INSTALLED=$((INSTALLED + 1))
         else
             echo -e "  ${RED}⚠️  ${description} — package installed but command not found. May need a relog.${NC}"
         fi
@@ -128,16 +132,16 @@ echo ""
 echo -e "${CYAN}── Audio ──${NC}"
 if command -v paplay &>/dev/null; then
     echo -e "  ${GREEN}✅ paplay (PulseAudio)${NC} — already installed"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 elif command -v pw-play &>/dev/null; then
     echo -e "  ${GREEN}✅ pw-play (PipeWire)${NC} — already installed"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 else
     echo -e "  ${YELLOW}📦 Installing audio playback${NC} (${AUDIO_PKG})..."
     $INSTALL_CMD "$AUDIO_PKG" || true
     if command -v paplay &>/dev/null || command -v pw-play &>/dev/null; then
         echo -e "  ${GREEN}✅ Audio playback installed!${NC}"
-        ((INSTALLED++))
+        INSTALLED=$((INSTALLED + 1))
     else
         echo -e "  ${RED}⚠️  Could not install audio playback. Notification sounds will be silent.${NC}"
     fi
@@ -148,13 +152,13 @@ echo ""
 echo -e "${CYAN}── FFmpeg (Video Thumbnails) ──${NC}"
 if command -v ffmpeg &>/dev/null; then
     echo -e "  ${GREEN}✅ ffmpeg${NC} — already installed ($(command -v ffmpeg))"
-    ((SKIPPED++))
+    SKIPPED=$((SKIPPED + 1))
 else
     echo -e "  ${YELLOW}📦 Installing ffmpeg${NC}..."
     $INSTALL_CMD ffmpeg || true
     if command -v ffmpeg &>/dev/null; then
         echo -e "  ${GREEN}✅ ffmpeg installed successfully!${NC}"
-        ((INSTALLED++))
+        INSTALLED=$((INSTALLED + 1))
     else
         echo -e "  ${RED}⚠️  Could not install ffmpeg. Video thumbnails will be unavailable.${NC}"
     fi
