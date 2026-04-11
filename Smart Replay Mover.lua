@@ -3862,10 +3862,26 @@ end
 local function recursive_mkdir(path)
     path = string.gsub(path, "\\", "/")
     local current = ""
+
+    if string.sub(path, 1, 1) == "/" then
+        current = "/"
+    else
+        local drive = string.match(path, "^(%a:)")
+        if drive then
+            current = drive
+        end
+    end
+
     for part in string.gmatch(path, "[^/]+") do
-        if current ~= "" then current = current .. "/" end
-        current = current .. part
-        obs.os_mkdir(current)
+        if current == "" or current == "/" or string.match(current, "^%a:$") then
+            current = current .. part
+        else
+            current = current .. "/" .. part
+        end
+
+        if not obs.os_file_exists(current) then
+            obs.os_mkdir(current)
+        end
     end
     return obs.os_file_exists(path)
 end
