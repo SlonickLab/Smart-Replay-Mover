@@ -3818,6 +3818,31 @@ local function clean_filename(str)
     return str
 end
 
+local function normalize_title_for_matching(value)
+    if not value or value == "" then return "" end
+    local normalized = string.lower(tostring(value))
+    normalized = string.gsub(normalized, "[^%w]+", " ")
+    normalized = string.gsub(normalized, "^%s+", "")
+    normalized = string.gsub(normalized, "%s+$", "")
+    normalized = string.gsub(normalized, "%s+", " ")
+    return normalized
+end
+
+local function window_title_matches_game(window_title, candidate)
+    if not window_title or not candidate or candidate == "" then return false end
+
+    local normalized_title = normalize_title_for_matching(window_title)
+    local normalized_candidate = normalize_title_for_matching(candidate)
+    if normalized_title == "" or normalized_candidate == "" then return false end
+
+    local start_pos, end_pos = string.find(normalized_title, normalized_candidate, 1, true)
+    if not start_pos then return false end
+
+    local before_ok = start_pos == 1 or string.sub(normalized_title, start_pos - 1, start_pos - 1) == " "
+    local after_ok = end_pos == #normalized_title or string.sub(normalized_title, end_pos + 1, end_pos + 1) == " "
+    return before_ok and after_ok
+end
+
 local function clean_folder_path(str)
     if not str or str == "" then return "Unknown" end
     -- Allow / and \ for nested folders, but sanitize specific chars
@@ -3833,17 +3858,35 @@ local function clean_folder_path(str)
     return str
 end
 
--- Recursive directory creation
+-- Recursive directory creation (Linux-safe: preserves leading "/" for absolute paths)
 local function recursive_mkdir(path)
     path = string.gsub(path, "\\", "/")
     local current = ""
+
+    -- Preserve root for absolute paths
+    if string.sub(path, 1, 1) == "/" then
+        current = "/"
+    end
+
     for part in string.gmatch(path, "[^/]+") do
-        if current ~= "" then current = current .. "/" end
-        current = current .. part
-        obs.os_mkdir(current)
+        -- Skip drive letter segment if already captured as root
+        if string.match(part, "^%a:$") and current == "" then
+            current = part
+        else
+            if current == "" or current == "/" then
+                current = current .. part
+            else
+                current = current .. "/" .. part
+            end
+        end
+
+        if not obs.os_file_exists(current) then
+            obs.os_mkdir(current)
+        end
     end
     return obs.os_file_exists(path)
 end
+
 
 -- Truncate filename to fit within MAX_PATH limit
 local function truncate_filename(filename, max_len)
@@ -3972,9 +4015,12 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
             end
         end
 
-        -- Check exact game names
+        -- Check game names against normalized title text.
+        -- IMPORTANT: do NOT use loose substring matching on short process keys
+        -- like "tru", otherwise "Euro Truck..." can be misdetected as
+        -- "Tomb Raider: Underworld" because "truck" contains "tru".
         for process, folder in pairs(GAME_NAMES) do
-            if string.find(lower_title, process, 1, true) then
+            if window_title_matches_game(window_title, folder) or window_title_matches_game(window_title, process) then
                 dbg("Window title matched GAME_NAMES: " .. folder)
                 return folder
             end
@@ -3983,7 +4029,7 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
         -- Check database by window title (slower but comprehensive)
         if GAME_DATABASE then
             for process, folder in pairs(GAME_DATABASE) do
-                if string.find(lower_title, process, 1, true) then
+                if window_title_matches_game(window_title, folder) or window_title_matches_game(window_title, process) then
                     dbg("Window title matched GAME_DATABASE: " .. folder)
                     return folder
                 end
