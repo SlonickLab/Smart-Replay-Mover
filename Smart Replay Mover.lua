@@ -3858,25 +3858,26 @@ local function clean_folder_path(str)
     return str
 end
 
--- Recursive directory creation
+-- Recursive directory creation (Linux-safe: preserves leading "/" for absolute paths)
 local function recursive_mkdir(path)
     path = string.gsub(path, "\\", "/")
     local current = ""
 
+    -- Preserve root for absolute paths
     if string.sub(path, 1, 1) == "/" then
         current = "/"
-    else
-        local drive = string.match(path, "^(%a:)")
-        if drive then
-            current = drive
-        end
     end
 
     for part in string.gmatch(path, "[^/]+") do
-        if current == "" or current == "/" or string.match(current, "^%a:$") then
-            current = current .. part
+        -- Skip drive letter segment if already captured as root
+        if string.match(part, "^%a:$") and current == "" then
+            current = part
         else
-            current = current .. "/" .. part
+            if current == "" or current == "/" then
+                current = current .. part
+            else
+                current = current .. "/" .. part
+            end
         end
 
         if not obs.os_file_exists(current) then
@@ -3885,6 +3886,7 @@ local function recursive_mkdir(path)
     end
     return obs.os_file_exists(path)
 end
+
 
 -- Truncate filename to fit within MAX_PATH limit
 local function truncate_filename(filename, max_len)
