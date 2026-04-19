@@ -768,7 +768,7 @@ local GAME_DATABASE = {
     ["evilwithin"] = "The Evil Within",
     ["evoland2"] = "Evoland 2",
     ["evolve"] = "Evolve Stage 2",
-    ["execpubg"] = "PUBG: Test Server",
+    ["execpubg"] = "PUBG",
     ["exefile"] = "Eve Online",
     ["expendabros"] = "The Expendabros",
     ["eye"] = "E.Y.E.: Divine Cybermancy",
@@ -1985,7 +1985,7 @@ local GAME_DATABASE = {
     ["ts4_x64"] = "The Sims 4",
     ["tsa"] = "Touhou Sky Arena",
     ["tslgame"] = "Player Unknown's Battlegrounds",
-    ["tslgame_be"] = "PUBG: Experimental Server",
+    ["tslgame_be"] = "PUBG",
     ["tsunmajo"] = "Tsundertaker's Mahou Removal",
     ["ttrengine"] = "Toontown Rewritten",
     ["turmoil_pc_full"] = "Turmoil",
@@ -3818,31 +3818,6 @@ local function clean_filename(str)
     return str
 end
 
-local function normalize_title_for_matching(value)
-    if not value or value == "" then return "" end
-    local normalized = string.lower(tostring(value))
-    normalized = string.gsub(normalized, "[^%w]+", " ")
-    normalized = string.gsub(normalized, "^%s+", "")
-    normalized = string.gsub(normalized, "%s+$", "")
-    normalized = string.gsub(normalized, "%s+", " ")
-    return normalized
-end
-
-local function window_title_matches_game(window_title, candidate)
-    if not window_title or not candidate or candidate == "" then return false end
-
-    local normalized_title = normalize_title_for_matching(window_title)
-    local normalized_candidate = normalize_title_for_matching(candidate)
-    if normalized_title == "" or normalized_candidate == "" then return false end
-
-    local start_pos, end_pos = string.find(normalized_title, normalized_candidate, 1, true)
-    if not start_pos then return false end
-
-    local before_ok = start_pos == 1 or string.sub(normalized_title, start_pos - 1, start_pos - 1) == " "
-    local after_ok = end_pos == #normalized_title or string.sub(normalized_title, end_pos + 1, end_pos + 1) == " "
-    return before_ok and after_ok
-end
-
 local function clean_folder_path(str)
     if not str or str == "" then return "Unknown" end
     -- Allow / and \ for nested folders, but sanitize specific chars
@@ -3886,7 +3861,6 @@ local function recursive_mkdir(path)
     end
     return obs.os_file_exists(path)
 end
-
 
 -- Truncate filename to fit within MAX_PATH limit
 local function truncate_filename(filename, max_len)
@@ -4015,12 +3989,9 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
             end
         end
 
-        -- Check game names against normalized title text.
-        -- IMPORTANT: do NOT use loose substring matching on short process keys
-        -- like "tru", otherwise "Euro Truck..." can be misdetected as
-        -- "Tomb Raider: Underworld" because "truck" contains "tru".
+        -- Check exact game names
         for process, folder in pairs(GAME_NAMES) do
-            if window_title_matches_game(window_title, folder) or window_title_matches_game(window_title, process) then
+            if string.find(lower_title, process, 1, true) then
                 dbg("Window title matched GAME_NAMES: " .. folder)
                 return folder
             end
@@ -4029,7 +4000,7 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
         -- Check database by window title (slower but comprehensive)
         if GAME_DATABASE then
             for process, folder in pairs(GAME_DATABASE) do
-                if window_title_matches_game(window_title, folder) or window_title_matches_game(window_title, process) then
+                if string.find(lower_title, process, 1, true) then
                     dbg("Window title matched GAME_DATABASE: " .. folder)
                     return folder
                 end
@@ -4256,6 +4227,16 @@ local function find_game_in_obs()
             local id = obs.obs_source_get_id(source)
             local portable = not WINDOWS_FFI_AVAILABLE and is_portable_obs_source(id)
             if id == "game_capture" or portable then
+                -- LIVENESS CHECK: Only trust source settings if the source is actively
+                -- capturing something. When no game is hooked, width/height = 0.
+                -- This prevents returning stale data from previously captured games.
+                -- (Cross-platform: works on both Windows and Linux)
+                local source_width = obs.obs_source_get_width(source)
+                if source_width == 0 then
+                    dbg("find_game_in_obs: source '" .. (obs.obs_source_get_name(source) or "?") .. "' not active (width=0), skipping")
+                    goto continue_source
+                end
+
                 local settings = obs.obs_source_get_settings(source)
                 if settings then
                     local window = obs.obs_data_get_string(settings, "window")
@@ -4272,7 +4253,34 @@ local function find_game_in_obs()
                     end
                     obs.obs_data_release(settings)
                 end
+
+                -- FALLBACK: Try get_hooked proc handler (Windows game_capture only)
+                -- This queries the live hooked process, not stale settings
+                if not found and id == "game_capture" then
+                    local proc_handler = obs.obs_source_get_proc_handler(source)
+                    if proc_handler then
+                        local cd = obs.calldata_create()
+                        if cd then
+                            local call_ok = pcall(function()
+                                if obs.proc_handler_call(proc_handler, "get_hooked", cd) then
+                                    local hooked = obs.calldata_string(cd, "hooked_exe")
+                                    if hooked and hooked ~= "" then
+                                        local hooked_clean = string.gsub(hooked, "%.[eE][xX][eE]$", "")
+                                        if not is_ignored(hooked_clean) then
+                                            found = hooked_clean
+                                            dbg("Found game from hooked process: " .. found)
+                                        end
+                                    end
+                                end
+                            end)
+                            obs.calldata_destroy(cd)
+                        end
+                    end
+                end
+
+                if found then break end
             end
+            ::continue_source::
         end
         obs.source_list_release(sources)
         return found, found_window
