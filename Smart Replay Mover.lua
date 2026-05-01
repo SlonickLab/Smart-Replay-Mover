@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.9.0
+-- Smart Replay Mover v2.9.1
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.9.0"
+local VERSION = "2.9.1"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,13 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.9.1:
+--   - FIX: Notification window now properly re-asserts TOPMOST on reuse (Win11 fix)
+--   - FIX: SetWindowPos called with HWND_TOPMOST after ShowWindow to force visibility
+--   - FIX: Removed SWP_NOZORDER flag that prevented Z-order update on window reuse
+--   - FIX: Update status now resets on every OBS launch (no more stale "Up to date" messages)
+--   - Added debug logging for exclusive fullscreen detection
+--
 -- CHANGELOG v2.9.0:
 --   - Linux Support: game detection via xprop (X11) and gdbus (KDE/Wayland)
 --   - Linux notifications via notify-send, sound via paplay/pw-play
@@ -1678,6 +1685,7 @@ local GAME_DATABASE = {
     ["sins of a solar empire rebellion"] = "Sins of a Solar Empire: Rebellion",
     ["sir"] = "Sir You Are Being Hunted",
     ["sisterlocation"] = "Five Nights at Freddy's: Sister Location",
+    ["sifu-win64-shipping"] = "Sifu",
     ["skilltree"] = "Skilltree Saga",
     ["skullgirls"] = "Skullgirls",
     ["skydrift"] = "Gensou SkyDrift",
@@ -3091,6 +3099,17 @@ local WS_EX_LAYERED = 0x00080000
 local WS_EX_TOOLWINDOW = 0x00000080
 local WS_EX_NOACTIVATE = 0x08000000
 
+-- HWND constants for SetWindowPos
+local HWND_TOPMOST = nil
+if WINDOWS_FFI_AVAILABLE and ffi then
+    HWND_TOPMOST = ffi.cast("HWND", ffi.cast("intptr_t", -1))
+end
+
+-- SetWindowPos flags
+local SWP_NOSIZE = 0x0001
+local SWP_NOMOVE = 0x0002
+local SWP_NOACTIVATE = 0x0010
+
 -- Other constants
 local SW_HIDE = 0
 local SW_SHOWNOACTIVATE = 4
@@ -3200,14 +3219,18 @@ local last_font_scale = 100             -- Track scale changes to rebuild fonts
 
 -- Check if app is in exclusive fullscreen mode
 local function is_exclusive_fullscreen()
-    if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
+    if not VISUAL_NOTIFICATIONS_SUPPORTED then return false end
     if shell32 == nil then return false end
 
     local ok, result = pcall(function()
         local state = ffi.new("int[1]")
         local hr = shell32.SHQueryUserNotificationState(state)
         if hr == 0 then
-            return state[0] == QUNS_RUNNING_D3D_FULL_SCREEN
+            local is_fs = state[0] == QUNS_RUNNING_D3D_FULL_SCREEN
+            if is_fs then
+                dbg("SHQueryUserNotificationState: D3D exclusive fullscreen detected (state=" .. state[0] .. ")")
+            end
+            return is_fs
         end
         return false
     end)
@@ -3503,6 +3526,11 @@ local function notification_timer_callback()
 
             if not notification_window_shown then
                 user32.ShowWindow(notification_hwnd, SW_SHOWNOACTIVATE)
+                -- Win11 FIX: Force TOPMOST re-assertion after ShowWindow
+                -- Windows 11 can strip TOPMOST from layered windows during show
+                if HWND_TOPMOST then
+                    user32.SetWindowPos(notification_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE + SWP_NOMOVE + SWP_NOACTIVATE)
+                end
                 notification_window_shown = true
             end
 
@@ -3658,7 +3686,10 @@ local function show_notification(title, message)
             local scale_factor = CONFIG.notification_scale / 100.0
             local x, y, scaled_width, scaled_height = get_notification_position(scale_factor)
             
-            user32.SetWindowPos(notification_hwnd, nil, x, y, scaled_width, scaled_height, 0x0010 + 0x0004) -- SWP_NOACTIVATE + SWP_NOZORDER
+            -- Win11 FIX: Use HWND_TOPMOST to re-assert topmost status on reuse
+            -- Previously used SWP_NOZORDER which prevented Z-order update
+            local insert_after = HWND_TOPMOST or nil
+            user32.SetWindowPos(notification_hwnd, insert_after, x, y, scaled_width, scaled_height, SWP_NOACTIVATE)
         end
 
         user32.SetLayeredWindowAttributes(notification_hwnd, 0, 0, LWA_ALPHA)
@@ -5876,6 +5907,11 @@ local function smart_save_replay(pressed)
 end
 
 function script_load(settings)
+    -- Reset update status on every load so stale results from previous
+    -- sessions don't persist (users would see old "✅ Up to date" forever)
+    startup_update_status = "📦 v" .. VERSION
+    startup_update_check_done = false
+
     destroy_orphaned_notifications()
 
     read_config(settings)
@@ -5984,7 +6020,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.9.0
+-- END OF SCRIPT v2.9.1
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
