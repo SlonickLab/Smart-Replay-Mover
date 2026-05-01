@@ -505,6 +505,9 @@
 - **🌍 Community-Driven Database** — The massive built-in database of 1800+ games is now available as a separate `games_database.json` file in the GitHub repository, making it super easy for the community to add new games via Pull Requests
 - **🧹 Code Quality** — Cleaned up duplicate `ffi.cdef` type declarations for better stability
 
+<details>
+<summary>View older versions</summary>
+
 ### v2.7.9
 
 - **🐛 Detection Fix** — Fixed `is_ignored()` false positives (`"obs"` no longer matches `"observer"`, `"code"` no longer matches `"barcode"`)
@@ -578,9 +581,6 @@
 - ⚡ **Instant Loading** — No lazy-loading delays, database ready immediately
 - 🔧 **Cleaner Code** — Optimized and consolidated codebase
 - 🐛 **Fixed** Explorer folders with game names no longer confused with actual games
-  
-  <details>
-  <summary>View older versions</summary>
 
 ### v2.6.3
 
@@ -614,7 +614,7 @@
 - 🎯 Basic game detection
 - 📁 Automatic folder creation
 
-  </details>
+</details>
 
   ---
 
