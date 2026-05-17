@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.9.1
+-- Smart Replay Mover v2.9.2
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.9.1"
+local VERSION = "2.9.2"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,16 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.9.2:
+--   - FIX: Replay Buffer now reliably auto-restarts after saving large clips (>1GB)
+--   - FIX: Adaptive restart delay based on file size (scales from 2s to 20s)
+--         instead of a fixed delay which was too short for large files
+--   - FIX: Added verification + retry after buffer start (checks active state, retries 3x)
+--   - FIX: Added 5s safety timeout to force-restart buffer if STOPPED event never fires
+--   - FIX: Auto-restart logic moved outside file-path check (restarts even if path is nil)
+--   - Removed "avp" from game database (conflicts with Kaspersky avp.exe)
+--   - Added timer cleanup for new restart timers in script_unload
+--
 -- CHANGELOG v2.9.1:
 --   - FIX: Notification window now properly re-asserts TOPMOST on reuse (Win11 fix)
 --   - FIX: SetWindowPos called with HWND_TOPMOST after ShowWindow to force visibility
@@ -354,7 +364,6 @@ local GAME_DATABASE = {
     ["avalonlords"] = "Avalon Lords",
     ["avgame-win64-shipping"] = "Vampyr",
     ["avorion"] = "Avorion",
-    ["avp"] = "Aliens vs Predator",
     ["avp3"] = "Alien Vs Predator",
     ["avp_dx11"] = "Aliens vs Predator",
     ["awesomenauts"] = "Awesomenauts",
@@ -2839,9 +2848,7 @@ local recording_output_ref = nil
 local recording_game_name = nil
 local recording_folder_name = nil
 
--- Temporary storage for new custom name input
-local new_process_name = ""
-local new_folder_name = ""
+
 
 -- Notification system state
 local notification_hwnd = nil           -- Current notification window handle
@@ -5010,11 +5017,70 @@ local function delayed_recording_init()
 end
 
 
+-- Verification: confirm buffer actually started after restart, retry if not
+local buffer_verify_retries = 0
+local MAX_BUFFER_VERIFY_RETRIES = 3
+
+local function verify_buffer_started()
+    obs.timer_remove(verify_buffer_started)
+
+    local ok, active = pcall(obs.obs_frontend_replay_buffer_active)
+    if not ok then
+        dbg("Auto-restart: Could not check buffer state")
+        buffer_verify_retries = 0
+        return
+    end
+
+    if active then
+        dbg("Auto-restart: Buffer verified active ✓")
+        buffer_verify_retries = 0
+        return
+    end
+
+    buffer_verify_retries = buffer_verify_retries + 1
+    if buffer_verify_retries <= MAX_BUFFER_VERIFY_RETRIES then
+        dbg("Auto-restart: Buffer NOT active, retry " .. buffer_verify_retries .. "/" .. MAX_BUFFER_VERIFY_RETRIES)
+        obs.obs_frontend_replay_buffer_start()
+        obs.timer_add(verify_buffer_started, 2000)
+    else
+        dbg("Auto-restart: Buffer failed to start after " .. MAX_BUFFER_VERIFY_RETRIES .. " retries — giving up")
+        buffer_verify_retries = 0
+    end
+end
+
 local function start_buffer_delayed()
     obs.timer_remove(start_buffer_delayed)
     obs.obs_frontend_replay_buffer_start()
     dbg("Replay Buffer auto-restarted")
-end 
+    -- Schedule verification to confirm buffer actually started
+    buffer_verify_retries = 0
+    obs.timer_add(verify_buffer_started, 2000)
+end
+
+-- Forward declaration needed because stop_buffer_for_restart references this
+local buffer_restart_safety_timeout
+
+local function stop_buffer_for_restart()
+    obs.timer_remove(stop_buffer_for_restart)
+    if not restarting_buffer_active then return end
+    obs.obs_frontend_replay_buffer_stop()
+    dbg("Auto-restart: Buffer stop called")
+    -- Safety: if STOPPED event doesn't arrive within 5s, force restart
+    obs.timer_add(buffer_restart_safety_timeout, 5000)
+end
+
+buffer_restart_safety_timeout = function()
+    obs.timer_remove(buffer_restart_safety_timeout)
+    if not restarting_buffer_active then return end
+    -- STOPPED event never fired — force restart as last resort
+    restarting_buffer_active = false
+    dbg("Auto-restart: Safety timeout — STOPPED event never arrived, forcing restart...")
+    obs.obs_frontend_replay_buffer_start()
+    dbg("Replay Buffer force-restarted (safety)")
+    -- Verify it actually started
+    buffer_verify_retries = 0
+    obs.timer_add(verify_buffer_started, 2000)
+end
 
 -- Auto-start replay buffer on OBS launch (5s delay for full initialization)
 local function auto_start_buffer_on_load()
@@ -5053,6 +5119,15 @@ local function on_event(event)
 
             last_save_time = now
 
+            -- Capture file size BEFORE moving — needed for adaptive restart delay.
+            -- Must be done here because process_file_with_game() renames the file,
+            -- making the original path invalid for size checks.
+            local saved_file_size = 0
+            if path then
+                local fs_ok, fs_result = pcall(get_file_size, path)
+                if fs_ok then saved_file_size = fs_result end
+            end
+
             if path then
                 local raw_game, window_title, skip_fallback = detect_game()
                 local folder_name = get_game_folder(raw_game, window_title, skip_fallback)
@@ -5062,13 +5137,29 @@ local function on_event(event)
                 process_file_with_game(path, folder_name, raw_game)
 
                 notify("Clip Saved", "Moved to: " .. folder_name)
-                
-                -- Auto-restart buffer logic (Prevent Overlap)
-                if CONFIG.restart_buffer_after_save then
-                    restarting_buffer_active = true
-                    obs.obs_frontend_replay_buffer_stop()
-                    dbg("Auto-restart: Buffer stopping...")
+            end
+
+            -- Auto-restart buffer logic (Prevent Overlap)
+            -- Placed OUTSIDE `if path` so buffer always restarts even if file path was nil.
+            -- Uses ADAPTIVE delay based on file size: larger files need more time for OBS
+            -- to fully stabilize internally after saving (flushing, muxer cleanup, etc.).
+            -- Calling stop() too soon after a large save hangs OBS in "Stopping..." state.
+            if CONFIG.restart_buffer_after_save then
+                restarting_buffer_active = true
+
+                -- Calculate adaptive delay: scale with file size
+                -- Formula: max(2s, file_size_MB / 100 * 1s), capped at 45s
+                -- 200MB→2s, 500MB→5s, 1GB→10s, 2GB→20s, 4GB+→45s
+                local delay_ms = 3000  -- default if size unknown
+                if saved_file_size and saved_file_size > 0 then
+                    local size_mb = saved_file_size / 1024 / 1024
+                    delay_ms = math.max(2000, math.min(45000, math.floor(size_mb / 100 * 1000)))
+                    dbg("Auto-restart: File size " .. string.format("%.0f", size_mb) .. " MB → adaptive delay " .. delay_ms .. "ms")
+                else
+                    dbg("Auto-restart: File size unknown → default delay " .. delay_ms .. "ms")
                 end
+
+                obs.timer_add(stop_buffer_for_restart, delay_ms)
             end
 
         elseif event == obs.OBS_FRONTEND_EVENT_SCREENSHOT_TAKEN then
@@ -5133,8 +5224,9 @@ local function on_event(event)
         elseif event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STOPPED then
             if restarting_buffer_active then
                 restarting_buffer_active = false
-                dbg("Auto-restart: Buffer stop confirmed. Restarting in 200ms...")
-                obs.timer_add(start_buffer_delayed, 200)
+                obs.timer_remove(buffer_restart_safety_timeout)  -- Cancel safety timeout
+                dbg("Auto-restart: Buffer stop confirmed. Restarting in 500ms...")
+                obs.timer_add(start_buffer_delayed, 500)
             end
             
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
@@ -6000,6 +6092,9 @@ function script_unload()
     obs.timer_remove(delayed_recording_init)
     obs.timer_remove(parse_startup_update_result)  -- Stop startup update check if still running
     obs.timer_remove(auto_start_buffer_on_load)    -- Cancel auto-start if still pending
+    obs.timer_remove(stop_buffer_for_restart)       -- Cancel pending buffer stop
+    obs.timer_remove(buffer_restart_safety_timeout) -- Cancel safety restart timeout
+    obs.timer_remove(verify_buffer_started)         -- Cancel buffer verification retries
     notification_timer_should_stop = true
     notification_queue = {}                        -- Discard any pending notifications
 
@@ -6020,7 +6115,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.9.1
+-- END OF SCRIPT v2.9.2
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
