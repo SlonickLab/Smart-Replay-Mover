@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.9.1-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.9.2-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -468,6 +468,13 @@
 
 ## 📋 Changelog
 
+### v2.9.2 — 🔄 Replay Buffer Auto-Restart Reliability Fix
+
+- **🔄 Large File Fix** — Fixed a race condition where the Replay Buffer would stay off after saving very large clips (>1GB). The script now uses an **adaptive delay** scaled to the file size (2s for ~200MB up to 45s for ~4GB), giving OBS enough time to stabilize internally before restarting ([Issue #22](https://github.com/SlonickLab/Smart-Replay-Mover/issues/22))
+- **✅ Start Verification** — After restarting, the script now verifies the buffer is actually active and retries up to 3 times if OBS silently ignored the start call
+- **🛡️ Safety Timeout** — 5-second safety timeout force-restarts the buffer if the expected stop event never fires
+- **📂 Restart Independence** — Auto-restart logic now runs regardless of file path detection
+
 ### v2.9.1 — 🔔 Windows 11 Notification Fix & Update Status Reset
 
 - **🔔 Win11 Notification Fix** — Notification popups now properly re-assert TOPMOST Z-order on window reuse, fixing invisible notifications on Windows 11
@@ -498,15 +505,15 @@
 - **⚡ Smart Skip** — On fast systems (NVMe/SSD), the intermediate "Saving..." is automatically skipped in favor of "Clip Saved" when save completes instantly
 - **🐛 Detection Fix** — Fixed double `detect_game()` call during replay buffer save that could cause wrong folder assignment
 
+<details>
+<summary>View older versions</summary>
+
 ### v2.8.0
 
 - **⚡ Smart Save Hotkey** — New OBS hotkey "Smart Save Replay" shows instant "Saving..." notification before the file is written, then the usual "Clip Saved" when done (Idea by rambam1120, [Issue #14](https://github.com/SlonickLab/Smart-Replay-Mover/issues/14))
 - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root without creating a subfolder (Idea by lemenegg)
 - **🌍 Community-Driven Database** — The massive built-in database of 1800+ games is now available as a separate `games_database.json` file in the GitHub repository, making it super easy for the community to add new games via Pull Requests
 - **🧹 Code Quality** — Cleaned up duplicate `ffi.cdef` type declarations for better stability
-
-<details>
-<summary>View older versions</summary>
 
 ### v2.7.9
 
