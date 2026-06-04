@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.9.2-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.9.3-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -467,6 +467,12 @@
   ---
 
 ## 📋 Changelog
+
+### v2.9.3 — 📂 Split Recording Organization Fix
+
+- **📂 Split Recording Fix** — Fixed a critical Lua variable scoping bug where split recordings were not organized into game folders. The `on_recording_file_changed()` signal handler was accessing a global variable instead of the local `current_recording_file`, causing stale paths from previous sessions to persist ([Issue #23](https://github.com/SlonickLab/Smart-Replay-Mover/issues/23))
+- **📁 Advanced Output Fallback** — Added fallback for initial recording file path via `obs_output_get_settings()` when `get_last_file` returns empty (common with `adv_file_output`)
+- **🛡️ Safety Net** — Signal handler now recovers previous file path from output settings when `current_recording_file` was never initialized
 
 ### v2.9.2 — 🔄 Replay Buffer Auto-Restart Reliability Fix
 
