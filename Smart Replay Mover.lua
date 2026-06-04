@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.9.2
+-- Smart Replay Mover v2.9.3
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.9.2"
+local VERSION = "2.9.3"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,16 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.9.3:
+--   - FIX: Split recordings now correctly organized into game folders (Issue #23)
+--   - FIX: Lua scoping bug where on_recording_file_changed() accessed a global
+--         instead of the local current_recording_file variable, causing stale paths
+--         from previous sessions to persist ("every other recording" bug)
+--   - FIX: Added fallback for initial recording file path via obs_output_get_settings()
+--         when get_last_file proc handler returns empty (common with adv_file_output)
+--   - FIX: Safety net in file_changed signal handler recovers previous file path
+--         from output settings when current_recording_file was never initialized
+--
 -- CHANGELOG v2.9.2:
 --   - FIX: Replay Buffer now reliably auto-restarts after saving large clips (>1GB)
 --   - FIX: Adaptive restart delay based on file size (scales from 2s to 20s)
@@ -4886,23 +4896,66 @@ local function process_file_with_game(path, folder_name, game_name)
 end
 
 -- ============================================================================
--- RECORDING SIGNAL HANDLERS
+-- RECORDING SIGNAL HANDLERS & SPLIT FILE TRACKING
 -- ============================================================================
+
+-- IMPORTANT: These must be declared BEFORE on_recording_file_changed()
+-- so the function captures the local upvalue, not a global with the same name.
+local split_files = {}
+local current_recording_file = nil
 
 local function on_recording_file_changed(calldata)
     if not CONFIG.organize_recordings then
         return
     end
 
-    local prev_file = obs.calldata_string(calldata, "next_file")
+    local next_file = obs.calldata_string(calldata, "next_file")
 
-    dbg("File split signal received, next_file: " .. tostring(prev_file))
+    dbg("File split signal received, next_file: " .. tostring(next_file))
 
     if recording_folder_name then
-        local recording = obs.obs_frontend_get_recording_output()
-        if recording then
-            obs.obs_output_release(recording)
+        -- Safety net: if current_recording_file was never set (get_last_file + settings both failed),
+        -- try one last time from the recording output we already hold a reference to
+        if (not current_recording_file or current_recording_file == "") and recording_output_ref then
+            local settings = obs.obs_output_get_settings(recording_output_ref)
+            if settings then
+                local path = obs.obs_data_get_string(settings, "path")
+                if not path or path == "" then
+                    path = obs.obs_data_get_string(settings, "url")
+                end
+                if path and path ~= "" and path ~= next_file then
+                    current_recording_file = path
+                    dbg("Recovered previous file from output settings: " .. path)
+                end
+                obs.obs_data_release(settings)
+            end
         end
+
+        -- The previous segment is in current_recording_file (set during init or previous split)
+        -- Move it to the game folder before updating to the new file
+        if current_recording_file and current_recording_file ~= "" then
+            -- Capture values for the closure (they may change by the time the timer fires)
+            local file_to_move = current_recording_file
+            local folder = recording_folder_name
+            local game = recording_game_name
+
+            -- Delay move by 300ms to ensure OBS has fully released the file handle
+            local function move_split_segment()
+                obs.timer_remove(move_split_segment)
+                if obs.os_file_exists(file_to_move) then
+                    log("Moving split segment: " .. file_to_move)
+                    process_file_with_game(file_to_move, folder, game)
+                else
+                    dbg("Split segment file not found (may have been moved by polling): " .. file_to_move)
+                end
+            end
+            obs.timer_add(move_split_segment, 300)
+        else
+            dbg("WARNING: Cannot move split segment - previous file path unknown")
+        end
+
+        -- Update tracking to the new file being written
+        current_recording_file = next_file
 
         log("File split detected - using cached game: " .. recording_folder_name)
     end
@@ -4947,12 +5000,7 @@ local function connect_recording_signals()
     return true
 end
 
--- ============================================================================
--- SPLIT FILE TRACKING
--- ============================================================================
-
-local split_files = {}
-local current_recording_file = nil
+-- Split file polling (fallback mechanism)
 
 local function check_split_files()
     if not CONFIG.organize_recordings then
@@ -5005,6 +5053,26 @@ local function delayed_recording_init()
             end
         end
         obs.calldata_destroy(cd)
+
+        -- Fallback: if get_last_file didn't work (common with adv_file_output),
+        -- try reading the file path directly from the output settings
+        if not current_recording_file or current_recording_file == "" then
+            local settings = obs.obs_output_get_settings(recording)
+            if settings then
+                local path = obs.obs_data_get_string(settings, "path")
+                if not path or path == "" then
+                    path = obs.obs_data_get_string(settings, "url")
+                end
+                if path and path ~= "" then
+                    current_recording_file = path
+                    dbg("Initial recording file (from output settings): " .. path)
+                else
+                    dbg("WARNING: Could not determine initial recording file path")
+                end
+                obs.obs_data_release(settings)
+            end
+        end
+
         obs.obs_output_release(recording)
     end
 
@@ -5147,13 +5215,15 @@ local function on_event(event)
             if CONFIG.restart_buffer_after_save then
                 restarting_buffer_active = true
 
-                -- Calculate adaptive delay: scale with file size
-                -- Formula: max(2s, file_size_MB / 100 * 1s), capped at 45s
-                -- 200MB→2s, 500MB→5s, 1GB→10s, 2GB→20s, 4GB+→45s
+                -- Calculate adaptive delay: base 2s + sqrt scaling for file size.
+                -- sqrt grows slowly, so SSD users don't wait excessively for large files,
+                -- while HDD users still get enough time for OBS to stabilize.
+                -- 100MB→2s, 500MB→4s, 1GB→5s, 2GB→7s, 4GB→8s (capped at 15s)
                 local delay_ms = 3000  -- default if size unknown
                 if saved_file_size and saved_file_size > 0 then
                     local size_mb = saved_file_size / 1024 / 1024
-                    delay_ms = math.max(2000, math.min(45000, math.floor(size_mb / 100 * 1000)))
+                    delay_ms = math.floor(2000 + math.sqrt(size_mb) * 150)
+                    delay_ms = math.max(2000, math.min(15000, delay_ms))
                     dbg("Auto-restart: File size " .. string.format("%.0f", size_mb) .. " MB → adaptive delay " .. delay_ms .. "ms")
                 else
                     dbg("Auto-restart: File size unknown → default delay " .. delay_ms .. "ms")
@@ -6095,6 +6165,7 @@ function script_unload()
     obs.timer_remove(stop_buffer_for_restart)       -- Cancel pending buffer stop
     obs.timer_remove(buffer_restart_safety_timeout) -- Cancel safety restart timeout
     obs.timer_remove(verify_buffer_started)         -- Cancel buffer verification retries
+    obs.timer_remove(start_buffer_delayed)           -- Cancel pending buffer start
     notification_timer_should_stop = true
     notification_queue = {}                        -- Discard any pending notifications
 
@@ -6115,7 +6186,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.9.2
+-- END OF SCRIPT v2.9.3
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
