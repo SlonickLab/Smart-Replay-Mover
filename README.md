@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.9.3-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.9.4-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -46,6 +46,7 @@
 - **1900+ Built-in Games** — Massive embedded database, no external files needed
 - **Auto-Pattern Matching** — `minecraft_1.20.exe` → Saves to `Minecraft`
 - **Anti-Cheat Compatible** — Window title fallback for protected games (Valorant, Fortnite, Sea of Thieves)
+- **🌍 Any-Language Names** — Correct folders for Chinese, Japanese, Korean & Cyrillic game names via native Unicode (UTF-16) detection
 - **🔍 Background Game Scanning** — Optional: detect games even when alt-tabbed to Discord (Windows)
 - **Linux OBS Sources** — Scans `xcomposite`, PipeWire, and X11 capture sources
 - **99.9% Accuracy** — Smart fallback chain ensures correct detection
@@ -467,6 +468,11 @@
   ---
 
 ## 📋 Changelog
+
+### v2.9.4 — 🌍 Multi-Language Folder Names
+
+- **🌍 Any-Language Folders** — Games with Chinese, Japanese, Korean, or Cyrillic names now create correctly-named folders instead of garbled "mojibake" (e.g. `苍蓝彼端`, not `ç»åºé¶æ`). Process detection and folder lookups now use native **Wide (UTF-16) Win32 APIs** (`GetModuleBaseNameW`, `QueryFullProcessImageNameW`, `FindFirstFileW`), so names are lossless regardless of your Windows language. (Surfaced by @YxlaGyb, [PR #24](https://github.com/SlonickLab/Smart-Replay-Mover/pull/24))
+- **🧹 Code Health** — Reorganized ~95 globals into namespaced tables (`WIN` / `STATE` / `NOTIF`) to clear LuaJIT's 200-local-per-chunk limit the script had reached (199 → 110), leaving headroom for future features. Purely structural — no behavior change, every `pcall` crash-guard preserved.
 
 ### v2.9.3 — 📂 Split Recording Organization Fix
 
