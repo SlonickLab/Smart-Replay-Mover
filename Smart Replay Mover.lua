@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.9.3
+-- Smart Replay Mover v2.9.4
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.9.3"
+local VERSION = "2.9.4"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,16 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.9.4:
+--   - FIX: Folders for non-Latin game names (Chinese/Japanese/Korean/Cyrillic) are now
+--         correct instead of garbled "mojibake" (Thanks @YxlaGyb, PR #24)
+--   - Migrated process & file-name reading to native Wide (UTF-16) Win32 APIs:
+--         GetModuleBaseNameW / QueryFullProcessImageNameW / FindFirstFileW (WIN32_FIND_DATAW).
+--         No system code page -> lossless for every language (replaces the ACP round-trip)
+--   - REFACTOR: Collapsed ~95 top-level locals into WIN / STATE / NOTIF tables to clear
+--         Lua's 200-local-per-chunk limit (199 -> 110); no behavior change, all pcall guards kept
+--   - Added utf8_truncate() so MAX_PATH trimming never splits a multi-byte UTF-8 character
+--
 -- CHANGELOG v2.9.3:
 --   - FIX: Split recordings now correctly organized into game folders (Issue #23)
 --   - FIX: Lua scoping bug where on_recording_file_changed() accessed a global
@@ -2839,32 +2849,55 @@ end
 -- STATE
 -- ============================================================================
 
-local last_save_time = 0
-local last_screenshot_time = 0
-local last_screenshot_notify_time = 0
-local cache_raw_game = nil
-local cache_folder_name = nil
-local last_detection_time = 0
-local last_recording_time = 0  -- Separate cooldown for recordings
-local files_moved = 0
-local files_skipped = 0
-local script_settings = nil  -- Store reference to settings for button callbacks
+-- ============================================================================
+-- STATE  (all mutable runtime state, namespaced into one table to conserve
+-- Lua's 200 main-chunk local-variable limit)
+-- ============================================================================
+local STATE = {
+    -- Cooldowns / detection cache
+    last_save_time = 0,
+    last_screenshot_time = 0,
+    last_screenshot_notify_time = 0,
+    cache_raw_game = nil,
+    cache_folder_name = nil,
+    last_detection_time = 0,
+    last_recording_time = 0,
+    files_moved = 0,
+    files_skipped = 0,
+    script_settings = nil,
 
--- Recording signal handler state
-local recording_signal_handler = nil
-local recording_output_ref = nil
+    -- Recording signal handler state
+    recording_signal_handler = nil,
+    recording_output_ref = nil,
+    recording_game_name = nil,
+    recording_folder_name = nil,
 
--- Store game name detected at recording start (for file splitting)
-local recording_game_name = nil
-local recording_folder_name = nil
+    -- Notification handles / fonts (GDI)
+    notification_hwnd = nil,
+    notification_hinstance = nil,
+    notification_bg_brush = nil,
+    notification_font = nil,
+    cached_title_font = nil,
+    cached_msg_font = nil,
+    last_font_scale = 100,
 
+    -- Notification render state
+    notification_end_time = 0,
+    notification_title = "",
+    notification_message = "",
+    notification_alpha = 0,
+    notification_fade_state = "none",
+    notification_window_shown = false,
+    notification_wndproc = nil,
+    notification_class_atom = nil,
+    notification_destroying = false,
+    notification_timer_should_stop = false,
 
-
--- Notification system state
-local notification_hwnd = nil           -- Current notification window handle
-local notification_hinstance = nil      -- Module instance
-local notification_bg_brush = nil       -- Persistent background brush
-local notification_font = nil           -- Text font
+    -- Update checker state
+    update_status_msg = "v" .. VERSION,
+    startup_update_status = "📦 v" .. VERSION,
+    startup_update_check_done = false,
+}
 
 -- ============================================================================
 -- LOGGING (defined early for use in notification system)
@@ -2928,9 +2961,11 @@ if IS_WINDOWS and ffi then
             HANDLE OpenProcess(DWORD dwDesiredAccess, BOOL bInheritHandle, DWORD dwProcessId);
             BOOL CloseHandle(HANDLE hObject);
             DWORD GetModuleBaseNameA(HANDLE hProcess, void* hModule, char* lpBaseName, DWORD nSize);
+            DWORD GetModuleBaseNameW(HANDLE hProcess, void* hModule, wchar_t* lpBaseName, DWORD nSize);
             int GetWindowTextA(HWND hWnd, char* lpString, int nMaxCount);
             int GetWindowTextW(HWND hWnd, wchar_t* lpString, int nMaxCount);
             BOOL QueryFullProcessImageNameA(HANDLE hProcess, DWORD dwFlags, char* lpExeName, DWORD* lpdwSize);
+            BOOL QueryFullProcessImageNameW(HANDLE hProcess, DWORD dwFlags, wchar_t* lpExeName, DWORD* lpdwSize);
 
             int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags, LPCSTR lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar);
             int WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags, const wchar_t* lpWideCharStr, int cchWideChar, char* lpMultiByteStr, int cbMultiByte, const char* lpDefaultChar, int* lpUsedDefaultChar);
@@ -2968,7 +3003,21 @@ if IS_WINDOWS and ffi then
                 char cAlternateFileName[14];
             } WIN32_FIND_DATAA;
 
+            typedef struct {
+                DWORD dwFileAttributes;
+                DWORD ftCreationTime_L; DWORD ftCreationTime_H;
+                DWORD ftLastAccessTime_L; DWORD ftLastAccessTime_H;
+                DWORD ftLastWriteTime_L; DWORD ftLastWriteTime_H;
+                DWORD nFileSizeHigh;
+                DWORD nFileSizeLow;
+                DWORD dwReserved0;
+                DWORD dwReserved1;
+                unsigned short cFileName[260];
+                unsigned short cAlternateFileName[14];
+            } WIN32_FIND_DATAW;
+
             HANDLE FindFirstFileA(LPCSTR lpFileName, void* lpFindFileData);
+            HANDLE FindFirstFileW(LPCWSTR lpFileName, void* lpFindFileData);
             BOOL FindClose(HANDLE hFindFile);
 
             // Custom Notification Window API
@@ -3100,88 +3149,106 @@ end
 
 VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
 
-local PROCESS_QUERY_INFORMATION = 0x0400
-local PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-local PROCESS_VM_READ = 0x0010
-local TH32CS_SNAPPROCESS = 0x00000002
-local CP_UTF8 = 65001
-local MAX_PATH = 260
+-- ============================================================================
+-- WIN32 CONSTANTS  (namespaced into one table to conserve Lua's hard limit of
+-- 200 local variables in the main chunk; see NOTIF / STATE tables too)
+-- ============================================================================
+local WIN = {
+    -- Process access / Toolhelp snapshot
+    PROCESS_QUERY_INFORMATION = 0x0400,
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000,
+    PROCESS_VM_READ = 0x0010,
+    TH32CS_SNAPPROCESS = 0x00000002,
 
--- Window style constants
-local WS_POPUP = 0x80000000
-local WS_VISIBLE = 0x10000000
-local WS_EX_TOPMOST = 0x00000008
-local WS_EX_TRANSPARENT = 0x00000020
-local WS_EX_LAYERED = 0x00080000
-local WS_EX_TOOLWINDOW = 0x00000080
-local WS_EX_NOACTIVATE = 0x08000000
+    -- Code pages
+    CP_UTF8 = 65001,
+    CP_ACP = 0,
+    MAX_PATH = 260,
 
--- HWND constants for SetWindowPos
-local HWND_TOPMOST = nil
+    -- Window styles
+    WS_POPUP = 0x80000000,
+    WS_VISIBLE = 0x10000000,
+    WS_EX_TOPMOST = 0x00000008,
+    WS_EX_TRANSPARENT = 0x00000020,
+    WS_EX_LAYERED = 0x00080000,
+    WS_EX_TOOLWINDOW = 0x00000080,
+    WS_EX_NOACTIVATE = 0x08000000,
+
+    -- SetWindowPos flags
+    SWP_NOSIZE = 0x0001,
+    SWP_NOMOVE = 0x0002,
+    SWP_NOACTIVATE = 0x0010,
+
+    -- ShowWindow / misc
+    SW_HIDE = 0,
+    SW_SHOWNOACTIVATE = 4,
+    SEE_MASK_NOCLOSEPROCESS = 0x00000040,
+    LWA_ALPHA = 0x00000002,
+    SM_CXSCREEN = 0,
+    SM_CYSCREEN = 1,
+    TRANSPARENT = 1,
+
+    -- Font (CreateFontA)
+    FW_BOLD = 700,
+    DEFAULT_CHARSET = 1,
+    OUT_DEFAULT_PRECIS = 0,
+    CLIP_DEFAULT_PRECIS = 0,
+    CLEARTYPE_QUALITY = 5,
+    DEFAULT_PITCH = 0,
+
+    -- DrawText flags
+    DT_CENTER = 0x00000001,
+    DT_VCENTER = 0x00000004,
+    DT_SINGLELINE = 0x00000020,
+
+    -- PlaySound flags
+    SND_ASYNC = 0x0001,
+    SND_ALIAS = 0x00010000,
+    SND_FILENAME = 0x00020000,
+    SND_NODEFAULT = 0x0002,
+
+    -- Fullscreen detection
+    QUNS_RUNNING_D3D_FULL_SCREEN = 3,
+
+    -- Window messages / class styles
+    WM_PAINT = 0x000F,
+    WM_ERASEBKGND = 0x0014,
+    WM_DESTROY = 0x0002,
+    CS_HREDRAW = 0x0002,
+    CS_VREDRAW = 0x0001,
+
+    -- Colors (BGR format for Windows)
+    COLOR_BG = 0x00252525,
+    COLOR_TEXT = 0x00FFFFFF,
+    COLOR_ACCENT = 0x0000D4AA,
+
+    -- Conversion buffers / misc
+    MAX_WIDE_BUFFER = 4096,
+    MAX_UTF8_BUFFER = 8192,
+    INFINITE = 0xFFFFFFFF,
+
+    -- HWND_TOPMOST is assigned below (needs a runtime ffi.cast)
+    HWND_TOPMOST = nil,
+}
+
+-- HWND_TOPMOST for SetWindowPos (requires an FFI cast at runtime)
 if WINDOWS_FFI_AVAILABLE and ffi then
-    HWND_TOPMOST = ffi.cast("HWND", ffi.cast("intptr_t", -1))
+    WIN.HWND_TOPMOST = ffi.cast("HWND", ffi.cast("intptr_t", -1))
 end
-
--- SetWindowPos flags
-local SWP_NOSIZE = 0x0001
-local SWP_NOMOVE = 0x0002
-local SWP_NOACTIVATE = 0x0010
-
--- Other constants
-local SW_HIDE = 0
-local SW_SHOWNOACTIVATE = 4
-local SEE_MASK_NOCLOSEPROCESS = 0x00000040
-local LWA_ALPHA = 0x00000002
-local SM_CXSCREEN = 0
-local SM_CYSCREEN = 1
-local TRANSPARENT = 1
-local FW_BOLD = 700
-local DEFAULT_CHARSET = 1
-local OUT_DEFAULT_PRECIS = 0
-local CLIP_DEFAULT_PRECIS = 0
-local CLEARTYPE_QUALITY = 5
-local DEFAULT_PITCH = 0
-local DT_CENTER = 0x00000001
-local DT_VCENTER = 0x00000004
-local DT_SINGLELINE = 0x00000020
-
--- Sound constants
-local SND_ASYNC = 0x0001
-local SND_ALIAS = 0x00010000
-local SND_FILENAME = 0x00020000
-local SND_NODEFAULT = 0x0002
-
--- Fullscreen detection constants
-local QUNS_RUNNING_D3D_FULL_SCREEN = 3
-
--- Window message constants
-local WM_PAINT = 0x000F
-local WM_ERASEBKGND = 0x0014
-local WM_DESTROY = 0x0002
-local CS_HREDRAW = 0x0002
-local CS_VREDRAW = 0x0001
-
--- Colors (BGR format for Windows)
-local COLOR_BG = 0x00252525
-local COLOR_TEXT = 0x00FFFFFF
-local COLOR_ACCENT = 0x0000D4AA
-
--- UTF-8 to UTF-16 conversion for Unicode support
-local MAX_WIDE_BUFFER = 4096
 
 local function utf8_to_wide(str)
     if not str or str == "" then return nil end
     if not kernel32 then return nil end
 
-    if #str > MAX_WIDE_BUFFER * 4 then
-        str = string.sub(str, 1, MAX_WIDE_BUFFER * 4)
+    if #str > WIN.MAX_WIDE_BUFFER * 4 then
+        str = string.sub(str, 1, WIN.MAX_WIDE_BUFFER * 4)
     end
 
     local ok, result = pcall(function()
-        local size = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
-        if size == 0 or size > MAX_WIDE_BUFFER then return nil end
+        local size = kernel32.MultiByteToWideChar(WIN.CP_UTF8, 0, str, -1, nil, 0)
+        if size == 0 or size > WIN.MAX_WIDE_BUFFER then return nil end
         local buf = ffi.new("unsigned short[?]", size)
-        kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, buf, size)
+        kernel32.MultiByteToWideChar(WIN.CP_UTF8, 0, str, -1, buf, size)
         return buf
     end)
 
@@ -3189,50 +3256,73 @@ local function utf8_to_wide(str)
 end
 
 -- ============================================================================
+-- ENCODING HELPERS  (UTF-16 <-> UTF-8)
+-- OBS speaks UTF-8 everywhere; the Win32 wide (*W) APIs speak UTF-16. These
+-- bridge the two with NO legacy code page involved, so process and folder names
+-- in ANY language (Chinese, Japanese, Korean, Cyrillic, ...) round-trip intact.
+-- ============================================================================
+
+-- Convert a UTF-16 (wide) buffer to a UTF-8 Lua string.
+local function wide_to_utf8(wide_buffer, wide_len)
+    if not WINDOWS_FFI_AVAILABLE then return nil end
+    if wide_len <= 0 or wide_len > WIN.MAX_WIDE_BUFFER then return nil end
+
+    local ok, result = pcall(function()
+        local size_needed = kernel32.WideCharToMultiByte(WIN.CP_UTF8, 0, wide_buffer, wide_len, nil, 0, nil, nil)
+        if size_needed <= 0 or size_needed > WIN.MAX_UTF8_BUFFER then return nil end
+
+        local utf8_buffer = ffi.new("char[?]", size_needed + 1)
+        local conv_result = kernel32.WideCharToMultiByte(WIN.CP_UTF8, 0, wide_buffer, wide_len, utf8_buffer, size_needed, nil, nil)
+
+        if conv_result > 0 then
+            return ffi.string(utf8_buffer, conv_result)
+        end
+        return nil
+    end)
+
+    return ok and result or nil
+end
+
+-- Length (in UTF-16 code units) of a NUL-terminated wide buffer, capped at max.
+local function wide_strlen(wbuf, max)
+    local n = 0
+    while n < max and wbuf[n] ~= 0 do
+        n = n + 1
+    end
+    return n
+end
+
+-- Truncate a UTF-8 string to at most max_bytes WITHOUT splitting a multi-byte
+-- character (UTF-8 continuation bytes are 0x80..0xBF).
+local function utf8_truncate(str, max_bytes)
+    if not str or #str <= max_bytes then return str end
+    local cut = max_bytes
+    while cut > 0 do
+        local b = string.byte(str, cut + 1)
+        if not b or b < 0x80 or b >= 0xC0 then break end  -- next byte starts a new char
+        cut = cut - 1
+    end
+    return string.sub(str, 1, cut)
+end
+
+-- ============================================================================
 -- NOTIFICATION SYSTEM
 -- ============================================================================
 
--- Notification window dimensions and identity
-local NOTIFICATION_WIDTH = 300
-local NOTIFICATION_HEIGHT = 70
-local NOTIFICATION_MARGIN = 20
-local NOTIFICATION_WINDOW_TITLE = "SmartReplayMoverNotification"
-
--- Animation settings
-local FADE_STEP = 25
-local FADE_MAX_ALPHA = 230
-local FADE_INTERVAL = 20
-
--- Notification state
-local notification_end_time = 0
-local notification_title = ""
-local notification_message = ""
-local notification_alpha = 0
-local notification_fade_state = "none"
-local notification_window_shown = false
-
--- Custom window class
-local NOTIFICATION_CLASS_NAME = "SmartReplayNotificationClass"
-local notification_wndproc = nil
-local notification_class_atom = nil
+-- Notification window dimensions, animation and identity (namespaced)
+local NOTIF = {
+    NOTIFICATION_WIDTH = 300,
+    NOTIFICATION_HEIGHT = 70,
+    NOTIFICATION_MARGIN = 20,
+    NOTIFICATION_WINDOW_TITLE = "SmartReplayMoverNotification",
+    FADE_STEP = 25,
+    FADE_MAX_ALPHA = 230,
+    FADE_INTERVAL = 20,
+    NOTIFICATION_CLASS_NAME = "SmartReplayNotificationClass",
+}
 
 -- Update checker state
-local update_status_msg = "v" .. VERSION
 local GITHUB_VERSION_FILE = join_path(TEMP_DIR, "smart_replay_mover_update.txt")
-
-local notification_destroying = false
-
--- Startup update check state (auto-check on load)
-local startup_update_status = "📦 v" .. VERSION
-local startup_update_check_done = false
-
-local notification_timer_should_stop = false
-
--- GDI Objects for rendering
-local notification_bg_brush = nil       -- Global background brush
-local cached_title_font = nil           -- Cached font for title
-local cached_msg_font = nil             -- Cached font for message
-local last_font_scale = 100             -- Track scale changes to rebuild fonts
 
 -- Check if app is in exclusive fullscreen mode
 local function is_exclusive_fullscreen()
@@ -3243,7 +3333,7 @@ local function is_exclusive_fullscreen()
         local state = ffi.new("int[1]")
         local hr = shell32.SHQueryUserNotificationState(state)
         if hr == 0 then
-            local is_fs = state[0] == QUNS_RUNNING_D3D_FULL_SCREEN
+            local is_fs = state[0] == WIN.QUNS_RUNNING_D3D_FULL_SCREEN
             if is_fs then
                 dbg("SHQueryUserNotificationState: D3D exclusive fullscreen detected (state=" .. state[0] .. ")")
             end
@@ -3261,14 +3351,14 @@ local function destroy_orphaned_notifications()
     pcall(function()
         -- Only target OUR specific window class to avoid instability
         for i = 1, 10 do
-            local orphan = user32.FindWindowA(NOTIFICATION_CLASS_NAME, nil)
+            local orphan = user32.FindWindowA(NOTIF.NOTIFICATION_CLASS_NAME, nil)
             if orphan == nil or orphan == ffi.cast("HWND", 0) then
                 break
             end
             
             -- If it's NOT our current handle, kill it
-            if orphan ~= notification_hwnd then
-                user32.ShowWindow(orphan, SW_HIDE)
+            if orphan ~= STATE.notification_hwnd then
+                user32.ShowWindow(orphan, WIN.SW_HIDE)
                 user32.DestroyWindow(orphan)
                 dbg("Destroyed orphaned notification window")
             else
@@ -3281,25 +3371,25 @@ end
 -- Hide current notification (immediate)
 local function hide_notification()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
-    if notification_destroying then return end
+    if STATE.notification_destroying then return end
 
-    local hwnd = notification_hwnd
+    local hwnd = STATE.notification_hwnd
     if hwnd == nil then return end
 
-    notification_destroying = true
+    STATE.notification_destroying = true
 
-    notification_fade_state = "none"
-    notification_alpha = 0
-    notification_window_shown = false
+    STATE.notification_fade_state = "none"
+    STATE.notification_alpha = 0
+    STATE.notification_window_shown = false
 
     pcall(function()
         if user32.IsWindow(hwnd) then
-            user32.ShowWindow(hwnd, SW_HIDE)
+            user32.ShowWindow(hwnd, WIN.SW_HIDE)
             -- NOTE: We no longer DestroyWindow here to allow reuse
         end
     end)
 
-    notification_destroying = false
+    STATE.notification_destroying = false
     dbg("Notification hidden (kept for reuse)")
 end
 
@@ -3307,26 +3397,26 @@ end
 local function ensure_fonts()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
     -- Rebuild fonts if scale changed
-    if last_font_scale ~= CONFIG.notification_scale then
-        if cached_title_font then gdi32.DeleteObject(cached_title_font); cached_title_font = nil end
-        if cached_msg_font then gdi32.DeleteObject(cached_msg_font); cached_msg_font = nil end
-        last_font_scale = CONFIG.notification_scale
+    if STATE.last_font_scale ~= CONFIG.notification_scale then
+        if STATE.cached_title_font then gdi32.DeleteObject(STATE.cached_title_font); STATE.cached_title_font = nil end
+        if STATE.cached_msg_font then gdi32.DeleteObject(STATE.cached_msg_font); STATE.cached_msg_font = nil end
+        STATE.last_font_scale = CONFIG.notification_scale
     end
 
     local scale_factor = CONFIG.notification_scale / 100.0
 
-    if cached_title_font == nil then
-        cached_title_font = gdi32.CreateFontA(
-            math.floor(-15 * scale_factor), 0, 0, 0, FW_BOLD, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI"
+    if STATE.cached_title_font == nil then
+        STATE.cached_title_font = gdi32.CreateFontA(
+            math.floor(-15 * scale_factor), 0, 0, 0, WIN.FW_BOLD, 0, 0, 0,
+            WIN.DEFAULT_CHARSET, WIN.OUT_DEFAULT_PRECIS, WIN.CLIP_DEFAULT_PRECIS,
+            WIN.CLEARTYPE_QUALITY, WIN.DEFAULT_PITCH, "Segoe UI"
         )
     end
-    if cached_msg_font == nil then
-        cached_msg_font = gdi32.CreateFontA(
+    if STATE.cached_msg_font == nil then
+        STATE.cached_msg_font = gdi32.CreateFontA(
             math.floor(-13 * scale_factor), 0, 0, 0, 400, 0, 0, 0,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY, DEFAULT_PITCH, "Segoe UI"
+            WIN.DEFAULT_CHARSET, WIN.OUT_DEFAULT_PRECIS, WIN.CLIP_DEFAULT_PRECIS,
+            WIN.CLEARTYPE_QUALITY, WIN.DEFAULT_PITCH, "Segoe UI"
         )
     end
 end
@@ -3339,13 +3429,13 @@ local function draw_notification_to_hdc(hdc, hwnd)
     local rect = ffi.new("RECT")
     user32.GetClientRect(hwnd, rect)
 
-    local bg_brush = gdi32.CreateSolidBrush(COLOR_BG)
+    local bg_brush = gdi32.CreateSolidBrush(WIN.COLOR_BG)
     if bg_brush ~= nil then
         user32.FillRect(hdc, rect, bg_brush)
         gdi32.DeleteObject(bg_brush)
     end
 
-    local accent_brush = gdi32.CreateSolidBrush(COLOR_ACCENT)
+    local accent_brush = gdi32.CreateSolidBrush(WIN.COLOR_ACCENT)
     if accent_brush ~= nil then
         local accent_rect = ffi.new("RECT", {0, 0, 4, rect.bottom})
         user32.FillRect(hdc, accent_rect, accent_brush)
@@ -3355,13 +3445,13 @@ local function draw_notification_to_hdc(hdc, hwnd)
     local scale_factor = CONFIG.notification_scale / 100.0
 
     ensure_fonts()
-    if cached_title_font == nil then return end
+    if STATE.cached_title_font == nil then return end
 
-    local old_font = gdi32.SelectObject(hdc, cached_title_font)
-    gdi32.SetBkMode(hdc, TRANSPARENT)
-    gdi32.SetTextColor(hdc, COLOR_TEXT)
+    local old_font = gdi32.SelectObject(hdc, STATE.cached_title_font)
+    gdi32.SetBkMode(hdc, WIN.TRANSPARENT)
+    gdi32.SetTextColor(hdc, WIN.COLOR_TEXT)
 
-    local safe_title = notification_title or "Notification"
+    local safe_title = STATE.notification_title or "Notification"
     if safe_title == "" then safe_title = "Notification" end
 
     -- Scale drawing coordinates
@@ -3380,11 +3470,11 @@ local function draw_notification_to_hdc(hdc, hwnd)
         user32.DrawTextA(hdc, safe_title, -1, title_rect, text_flags)
     end
 
-    if cached_msg_font ~= nil then
-        gdi32.SelectObject(hdc, cached_msg_font)
+    if STATE.cached_msg_font ~= nil then
+        gdi32.SelectObject(hdc, STATE.cached_msg_font)
         gdi32.SetTextColor(hdc, 0x00BBBBBB)
 
-        local safe_message = notification_message or ""
+        local safe_message = STATE.notification_message or ""
 
         local msg_y = math.floor(34 * scale_factor)
         local msg_rect = ffi.new("RECT", {math.floor(12 * scale_factor), msg_y, rect.right - math.floor(10 * scale_factor), rect.bottom - math.floor(8 * scale_factor)})
@@ -3404,20 +3494,20 @@ end
 -- Draw notification content (wrapper)
 local function draw_notification_content()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
-    if notification_hwnd == nil then return end
+    if STATE.notification_hwnd == nil then return end
 
     -- Enhanced safety: ensure we check if window still exists
-    if not user32.IsWindow(notification_hwnd) then
-        notification_hwnd = nil
+    if not user32.IsWindow(STATE.notification_hwnd) then
+        STATE.notification_hwnd = nil
         return
     end
 
-    local hdc = user32.GetDC(notification_hwnd)
+    local hdc = user32.GetDC(STATE.notification_hwnd)
     if hdc ~= nil then
         -- CRITICAL SAFETY: Ensure ReleaseDC is ALWAYS called even if drawing fails
         -- to prevent GDI resource leaks.
-        pcall(draw_notification_to_hdc, hdc, notification_hwnd)
-        user32.ReleaseDC(notification_hwnd, hdc)
+        pcall(draw_notification_to_hdc, hdc, STATE.notification_hwnd)
+        user32.ReleaseDC(STATE.notification_hwnd, hdc)
     end
 end
 
@@ -3425,49 +3515,49 @@ end
 -- Register custom notification window class
 local function register_notification_class()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
-    if notification_class_atom ~= nil then
+    if STATE.notification_class_atom ~= nil then
         return true
     end
 
     local ok, result = pcall(function()
-        if notification_hinstance == nil then
-            notification_hinstance = kernel32.GetModuleHandleA(nil)
+        if STATE.notification_hinstance == nil then
+            STATE.notification_hinstance = kernel32.GetModuleHandleA(nil)
         end
 
         pcall(function()
-            user32.UnregisterClassA(NOTIFICATION_CLASS_NAME, notification_hinstance)
+            user32.UnregisterClassA(NOTIF.NOTIFICATION_CLASS_NAME, STATE.notification_hinstance)
         end)
 
         -- CRASH FIX: Do not use a Lua callback for the Window Procedure.
         -- We pass the Windows Default function directly. This prevents the
         -- re-entrancy crash in lua51.dll.
-        notification_wndproc = user32.DefWindowProcA
+        STATE.notification_wndproc = user32.DefWindowProcA
 
-        if notification_bg_brush == nil then
-            notification_bg_brush = gdi32.CreateSolidBrush(COLOR_BG)
+        if STATE.notification_bg_brush == nil then
+            STATE.notification_bg_brush = gdi32.CreateSolidBrush(WIN.COLOR_BG)
         end
 
         local wc = ffi.new("WNDCLASSEXA")
         wc.cbSize = ffi.sizeof("WNDCLASSEXA")
-        wc.style = CS_HREDRAW + CS_VREDRAW
-        wc.lpfnWndProc = notification_wndproc -- Points to C function, not Lua
+        wc.style = WIN.CS_HREDRAW + WIN.CS_VREDRAW
+        wc.lpfnWndProc = STATE.notification_wndproc -- Points to C function, not Lua
         wc.cbClsExtra = 0
         wc.cbWndExtra = 0
-        wc.hInstance = notification_hinstance
+        wc.hInstance = STATE.notification_hinstance
         wc.hIcon = nil
         wc.hCursor = nil
-        wc.hbrBackground = notification_bg_brush
+        wc.hbrBackground = STATE.notification_bg_brush
         wc.lpszMenuName = nil
-        wc.lpszClassName = NOTIFICATION_CLASS_NAME
+        wc.lpszClassName = NOTIF.NOTIFICATION_CLASS_NAME
         wc.hIconSm = nil
 
-        notification_class_atom = user32.RegisterClassExA(wc)
+        STATE.notification_class_atom = user32.RegisterClassExA(wc)
 
-        if notification_class_atom == 0 then
+        if STATE.notification_class_atom == 0 then
             dbg("Failed to register notification class")
-            if notification_bg_brush ~= nil then
-                gdi32.DeleteObject(notification_bg_brush)
-                notification_bg_brush = nil
+            if STATE.notification_bg_brush ~= nil then
+                gdi32.DeleteObject(STATE.notification_bg_brush)
+                STATE.notification_bg_brush = nil
             end
             return false
         end
@@ -3482,20 +3572,20 @@ end
 -- Unregister custom notification window class
 local function unregister_notification_class()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
-    if notification_wndproc ~= nil then
-        notification_wndproc = nil
+    if STATE.notification_wndproc ~= nil then
+        STATE.notification_wndproc = nil
     end
 
-    if notification_class_atom ~= nil then
+    if STATE.notification_class_atom ~= nil then
         pcall(function()
-            user32.UnregisterClassA(NOTIFICATION_CLASS_NAME, notification_hinstance)
+            user32.UnregisterClassA(NOTIF.NOTIFICATION_CLASS_NAME, STATE.notification_hinstance)
         end)
-        notification_class_atom = nil
+        STATE.notification_class_atom = nil
     end
 
-    if notification_bg_brush ~= nil then
-        gdi32.DeleteObject(notification_bg_brush)
-        notification_bg_brush = nil
+    if STATE.notification_bg_brush ~= nil then
+        gdi32.DeleteObject(STATE.notification_bg_brush)
+        STATE.notification_bg_brush = nil
     end
 
     dbg("Unregistered notification class")
@@ -3504,34 +3594,34 @@ end
 -- Animation timer callback
 local function notification_timer_callback()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then
-        notification_timer_should_stop = false
+        STATE.notification_timer_should_stop = false
         obs.timer_remove(notification_timer_callback)
         return
     end
-    if notification_timer_should_stop then
-        notification_timer_should_stop = false
+    if STATE.notification_timer_should_stop then
+        STATE.notification_timer_should_stop = false
         obs.timer_remove(notification_timer_callback)
         return
     end
 
-    if notification_destroying then
+    if STATE.notification_destroying then
         return
     end
 
     local ok, err = pcall(function()
-        if notification_hwnd == nil or notification_destroying then
-            notification_timer_should_stop = true
-            notification_fade_state = "none"
+        if STATE.notification_hwnd == nil or STATE.notification_destroying then
+            STATE.notification_timer_should_stop = true
+            STATE.notification_fade_state = "none"
             return
         end
 
         local need_redraw = false
 
-        if notification_fade_state == "in" then
-            notification_alpha = notification_alpha + FADE_STEP
-            if notification_alpha >= FADE_MAX_ALPHA then
-                notification_alpha = FADE_MAX_ALPHA
-                notification_fade_state = "visible"
+        if STATE.notification_fade_state == "in" then
+            STATE.notification_alpha = STATE.notification_alpha + NOTIF.FADE_STEP
+            if STATE.notification_alpha >= NOTIF.FADE_MAX_ALPHA then
+                STATE.notification_alpha = NOTIF.FADE_MAX_ALPHA
+                STATE.notification_fade_state = "visible"
                 -- Only redraw once when fully visible
                 need_redraw = true
             else
@@ -3539,34 +3629,34 @@ local function notification_timer_callback()
                 need_redraw = true
             end
 
-            user32.SetLayeredWindowAttributes(notification_hwnd, 0, notification_alpha, LWA_ALPHA)
+            user32.SetLayeredWindowAttributes(STATE.notification_hwnd, 0, STATE.notification_alpha, WIN.LWA_ALPHA)
 
-            if not notification_window_shown then
-                user32.ShowWindow(notification_hwnd, SW_SHOWNOACTIVATE)
+            if not STATE.notification_window_shown then
+                user32.ShowWindow(STATE.notification_hwnd, WIN.SW_SHOWNOACTIVATE)
                 -- Win11 FIX: Force TOPMOST re-assertion after ShowWindow
                 -- Windows 11 can strip TOPMOST from layered windows during show
-                if HWND_TOPMOST then
-                    user32.SetWindowPos(notification_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOSIZE + SWP_NOMOVE + SWP_NOACTIVATE)
+                if WIN.HWND_TOPMOST then
+                    user32.SetWindowPos(STATE.notification_hwnd, WIN.HWND_TOPMOST, 0, 0, 0, 0, WIN.SWP_NOSIZE + WIN.SWP_NOMOVE + WIN.SWP_NOACTIVATE)
                 end
-                notification_window_shown = true
+                STATE.notification_window_shown = true
             end
 
-        elseif notification_fade_state == "visible" then
-            if os.time() >= notification_end_time then
-                notification_fade_state = "out"
+        elseif STATE.notification_fade_state == "visible" then
+            if os.time() >= STATE.notification_end_time then
+                STATE.notification_fade_state = "out"
             end
             -- Efficiency: No redraw needed while static
 
-        elseif notification_fade_state == "out" then
-            notification_alpha = notification_alpha - FADE_STEP
-            if notification_alpha <= 0 then
-                notification_alpha = 0
+        elseif STATE.notification_fade_state == "out" then
+            STATE.notification_alpha = STATE.notification_alpha - NOTIF.FADE_STEP
+            if STATE.notification_alpha <= 0 then
+                STATE.notification_alpha = 0
                 hide_notification()
-                notification_timer_should_stop = true
+                STATE.notification_timer_should_stop = true
                 dbg("Notification fade-out complete")
                 return
             end
-            user32.SetLayeredWindowAttributes(notification_hwnd, 0, notification_alpha, LWA_ALPHA)
+            user32.SetLayeredWindowAttributes(STATE.notification_hwnd, 0, STATE.notification_alpha, WIN.LWA_ALPHA)
             -- Efficiency: Windows handles alpha transparency on its own,
             -- we don't need to re-render the bitmap itself.
             need_redraw = false
@@ -3574,7 +3664,7 @@ local function notification_timer_callback()
 
         -- CRASH FIX: Manually draw content from the timer thread
         -- This is safe because it is sequential, not interrupt-driven
-        if need_redraw and notification_hwnd ~= nil then
+        if need_redraw and STATE.notification_hwnd ~= nil then
             draw_notification_content()
         end
     end)
@@ -3582,18 +3672,18 @@ local function notification_timer_callback()
     if not ok then
         dbg("Timer callback error: " .. tostring(err))
         hide_notification()
-        notification_timer_should_stop = true
+        STATE.notification_timer_should_stop = true
     end
 end
 
 -- Calculate notification position based on user setting
 local function get_notification_position(scale_factor)
-    local scaled_width = math.floor(NOTIFICATION_WIDTH * scale_factor)
-    local scaled_height = math.floor(NOTIFICATION_HEIGHT * scale_factor)
-    local scaled_margin = math.floor(NOTIFICATION_MARGIN * scale_factor)
+    local scaled_width = math.floor(NOTIF.NOTIFICATION_WIDTH * scale_factor)
+    local scaled_height = math.floor(NOTIF.NOTIFICATION_HEIGHT * scale_factor)
+    local scaled_margin = math.floor(NOTIF.NOTIFICATION_MARGIN * scale_factor)
 
-    local screen_width = user32.GetSystemMetrics(SM_CXSCREEN)
-    local screen_height = user32.GetSystemMetrics(SM_CYSCREEN)
+    local screen_width = user32.GetSystemMetrics(WIN.SM_CXSCREEN)
+    local screen_height = user32.GetSystemMetrics(WIN.SM_CYSCREEN)
 
     local pos = CONFIG.notification_position or "top_right"
     local x, y
@@ -3640,16 +3730,16 @@ local function show_notification(title, message)
 
     -- STABILITY FIX: Instead of always destroying the window, we reuse it.
     -- This avoids the risky DestroyWindow/CreateWindow cycle during stress periods.
-    notification_title = title or "Notification"
-    notification_message = message or ""
-    notification_end_time = os.time() + math.ceil(CONFIG.notification_duration)
-    notification_alpha = 0
-    notification_fade_state = "in"
-    notification_window_shown = false
+    STATE.notification_title = title or "Notification"
+    STATE.notification_message = message or ""
+    STATE.notification_end_time = os.time() + math.ceil(CONFIG.notification_duration)
+    STATE.notification_alpha = 0
+    STATE.notification_fade_state = "in"
+    STATE.notification_window_shown = false
 
     local ok, err = pcall(function()
-        if notification_hinstance == nil then
-            notification_hinstance = kernel32.GetModuleHandleA(nil)
+        if STATE.notification_hinstance == nil then
+            STATE.notification_hinstance = kernel32.GetModuleHandleA(nil)
         end
 
         if not register_notification_class() then
@@ -3659,11 +3749,11 @@ local function show_notification(title, message)
 
         -- Check if window still exists and is valid
         local needs_create = true
-        if notification_hwnd ~= nil then
-            if user32.IsWindow(notification_hwnd) then
+        if STATE.notification_hwnd ~= nil then
+            if user32.IsWindow(STATE.notification_hwnd) then
                 needs_create = false
             else
-                notification_hwnd = nil -- Invalid handle
+                STATE.notification_hwnd = nil -- Invalid handle
             end
         end
 
@@ -3673,21 +3763,21 @@ local function show_notification(title, message)
             local scale_factor = CONFIG.notification_scale / 100.0
             local x, y, scaled_width, scaled_height = get_notification_position(scale_factor)
 
-            local ex_style = WS_EX_TOPMOST + WS_EX_TOOLWINDOW + WS_EX_NOACTIVATE + WS_EX_LAYERED + WS_EX_TRANSPARENT
+            local ex_style = WIN.WS_EX_TOPMOST + WIN.WS_EX_TOOLWINDOW + WIN.WS_EX_NOACTIVATE + WIN.WS_EX_LAYERED + WIN.WS_EX_TRANSPARENT
 
-            notification_hwnd = user32.CreateWindowExA(
+            STATE.notification_hwnd = user32.CreateWindowExA(
                 ex_style,
-                NOTIFICATION_CLASS_NAME,
-                NOTIFICATION_WINDOW_TITLE,
-                WS_POPUP,
+                NOTIF.NOTIFICATION_CLASS_NAME,
+                NOTIF.NOTIFICATION_WINDOW_TITLE,
+                WIN.WS_POPUP,
                 x, y,
                 scaled_width, scaled_height,
                 nil, nil,
-                notification_hinstance,
+                STATE.notification_hinstance,
                 nil
             )
 
-            if notification_hwnd == nil then
+            if STATE.notification_hwnd == nil then
                 dbg("CreateWindowExA failed")
                 return
             end
@@ -3705,18 +3795,18 @@ local function show_notification(title, message)
             
             -- Win11 FIX: Use HWND_TOPMOST to re-assert topmost status on reuse
             -- Previously used SWP_NOZORDER which prevented Z-order update
-            local insert_after = HWND_TOPMOST or nil
-            user32.SetWindowPos(notification_hwnd, insert_after, x, y, scaled_width, scaled_height, SWP_NOACTIVATE)
+            local insert_after = WIN.HWND_TOPMOST or nil
+            user32.SetWindowPos(STATE.notification_hwnd, insert_after, x, y, scaled_width, scaled_height, WIN.SWP_NOACTIVATE)
         end
 
-        user32.SetLayeredWindowAttributes(notification_hwnd, 0, 0, LWA_ALPHA)
+        user32.SetLayeredWindowAttributes(STATE.notification_hwnd, 0, 0, WIN.LWA_ALPHA)
 
         -- Initial manual draw to set the new content
         draw_notification_content()
 
         -- Restart/Update timer
         obs.timer_remove(notification_timer_callback)
-        obs.timer_add(notification_timer_callback, FADE_INTERVAL)
+        obs.timer_add(notification_timer_callback, NOTIF.FADE_INTERVAL)
 
         dbg("Notification triggered: " .. title .. " | " .. message)
     end)
@@ -3759,14 +3849,14 @@ local function play_notification_sound()
             end
             
             local full_path = SCRIPT_DIR .. sound_file
-            local result = winmm.PlaySoundA(full_path, nil, SND_FILENAME + SND_ASYNC + SND_NODEFAULT)
+            local result = winmm.PlaySoundA(full_path, nil, WIN.SND_FILENAME + WIN.SND_ASYNC + WIN.SND_NODEFAULT)
             if result ~= 0 then
                 dbg("Playing custom sound: " .. sound_file)
                 return
             end
         end
 
-        winmm.PlaySoundA("SystemNotification", nil, SND_ALIAS + SND_ASYNC)
+        winmm.PlaySoundA("SystemNotification", nil, WIN.SND_ALIAS + WIN.SND_ASYNC)
         dbg("Playing system notification sound")
     end)
 end
@@ -3816,34 +3906,34 @@ end
 -- Cleanup notification resources
 local function cleanup_notifications()
     if not VISUAL_NOTIFICATIONS_SUPPORTED then return end
-    notification_timer_should_stop = true
+    STATE.notification_timer_should_stop = true
     obs.timer_remove(notification_timer_callback)
 
     hide_notification()
 
-    if cached_title_font ~= nil then
-        gdi32.DeleteObject(cached_title_font)
-        cached_title_font = nil
+    if STATE.cached_title_font ~= nil then
+        gdi32.DeleteObject(STATE.cached_title_font)
+        STATE.cached_title_font = nil
     end
-    if cached_msg_font ~= nil then
-        gdi32.DeleteObject(cached_msg_font)
-        cached_msg_font = nil
+    if STATE.cached_msg_font ~= nil then
+        gdi32.DeleteObject(STATE.cached_msg_font)
+        STATE.cached_msg_font = nil
     end
 
     destroy_orphaned_notifications()
 
     unregister_notification_class()
 
-    notification_hinstance = nil
-    notification_destroying = false
-    notification_timer_should_stop = false
-    notification_fade_state = "none"
-    notification_alpha = 0
-    notification_window_shown = false
-    notification_end_time = 0
-    notification_title = ""
-    notification_message = ""
-    notification_hwnd = nil  -- Explicitly reset handle
+    STATE.notification_hinstance = nil
+    STATE.notification_destroying = false
+    STATE.notification_timer_should_stop = false
+    STATE.notification_fade_state = "none"
+    STATE.notification_alpha = 0
+    STATE.notification_window_shown = false
+    STATE.notification_end_time = 0
+    STATE.notification_title = ""
+    STATE.notification_message = ""
+    STATE.notification_hwnd = nil  -- Explicitly reset handle
 end
 
 -- ============================================================================
@@ -3910,18 +4000,6 @@ local function recursive_mkdir(path)
     return obs.os_file_exists(path)
 end
 
--- UTF-8 safe string truncation: ensures we never cut in the middle of a multi-byte character
-function utf8_truncate(str, max_bytes)
-    if not str or #str <= max_bytes then return str end
-    -- Walk backwards from max_bytes to avoid splitting a UTF-8 continuation byte
-    while max_bytes > 0 do
-        local b = string.byte(str, max_bytes + 1)
-        if not b or b < 0x80 or b >= 0xC0 then break end
-        max_bytes = max_bytes - 1
-    end
-    return string.sub(str, 1, max_bytes)
-end
-
 -- Truncate filename to fit within MAX_PATH limit
 local function truncate_filename(filename, max_len)
     if not filename or #filename <= max_len then
@@ -3945,8 +4023,8 @@ end
 -- Validate path length
 local function validate_path_length(path)
     if not path then return false, "Path is nil" end
-    if #path > MAX_PATH then
-        return false, "Path exceeds MAX_PATH (" .. MAX_PATH .. "): " .. #path .. " chars"
+    if #path > WIN.MAX_PATH then
+        return false, "Path exceeds MAX_PATH (" .. WIN.MAX_PATH .. "): " .. #path .. " chars"
     end
     return true, nil
 end
@@ -4083,53 +4161,6 @@ end
 -- GAME DETECTION
 -- ============================================================================
 
--- Convert a raw byte string from the system ACP (e.g. GBK on Chinese Windows)
--- to UTF-8. Used to fix garbled Chinese process names from GetModuleBaseNameA.
--- Returns the original string unchanged if the conversion fails.
-function acp_to_utf8(str)
-    if not str or str == "" or not kernel32 then return str end
-    local ok, result = pcall(function()
-        local wlen = kernel32.MultiByteToWideChar(0, 0, str, -1, nil, 0)
-        if wlen <= 0 or wlen > MAX_WIDE_BUFFER then
-            log("acp_to_utf8: MultiByteToWideChar query FAILED (wlen=" .. tostring(wlen) .. ", input_len=" .. #str .. ")")
-            return str
-        end
-        local wbuf = ffi.new("unsigned short[?]", wlen)
-        local conv1 = kernel32.MultiByteToWideChar(0, 0, str, -1, wbuf, wlen)
-        if conv1 == 0 then
-            log("acp_to_utf8: MultiByteToWideChar convert FAILED ( GetLastError=" .. tostring(kernel32.GetLastError and kernel32.GetLastError() or "?") .. ")")
-            return str
-        end
-        local utf8 = wide_to_utf8(wbuf, wlen - 1)
-        if not utf8 then
-            log("acp_to_utf8: wide_to_utf8 returned nil (wlen=" .. tostring(wlen) .. ")")
-            return str
-        end
-        log("acp_to_utf8: OK '" .. str .. "' -> '" .. utf8 .. "'")
-        return utf8
-    end)
-    if not ok then log("acp_to_utf8 EXCEPTION: " .. tostring(result)) end
-    return ok and result or str
-end
-
--- Convert a UTF-8 string to the system ACP (e.g. GBK on Chinese Windows).
--- Used when calling Win32 ANSI APIs that expect ACP-encoded strings.
-function utf8_to_acp(str)
-    if not str or str == "" or not kernel32 then return str end
-    local ok, result = pcall(function()
-        local wlen = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
-        if wlen <= 0 or wlen > MAX_WIDE_BUFFER then return str end
-        local wbuf = ffi.new("unsigned short[?]", wlen)
-        kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, wbuf, wlen)
-        local acp_len = kernel32.WideCharToMultiByte(0, 0, wbuf, wlen, nil, 0, nil, nil)
-        if acp_len <= 0 or acp_len > MAX_WIDE_BUFFER * 2 then return str end
-        local acp_buf = ffi.new("char[?]", acp_len)
-        kernel32.WideCharToMultiByte(0, 0, wbuf, wlen, acp_buf, acp_len, nil, nil)
-        return ffi.string(acp_buf, acp_len - 1)
-    end)
-    return ok and result or str
-end
-
 local function get_active_process()
     if not WINDOWS_FFI_AVAILABLE then return nil end
     local ok, result = pcall(function()
@@ -4142,14 +4173,15 @@ local function get_active_process()
         -- Validate PID before proceeding
         if pid[0] == 0 then return nil end
 
-        local process = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION + PROCESS_VM_READ, 0, pid[0])
+        local process = kernel32.OpenProcess(WIN.PROCESS_QUERY_INFORMATION + WIN.PROCESS_VM_READ, 0, pid[0])
         if is_invalid_handle(process) then return nil end
 
-        -- Use nested pcall for GetModuleBaseNameA - some anti-cheat systems
-        -- (Marvel Rivals, Valorant, etc.) can cause crashes here
-        local buffer = ffi.new("char[260]")
+        -- Wide (UTF-16) buffer + GetModuleBaseNameW: no code page involved, so
+        -- process names in ANY language come through intact. Nested pcall because
+        -- some anti-cheat systems (Marvel Rivals, Valorant, etc.) can crash here.
+        local wbuffer = ffi.new("unsigned short[260]")
         local get_ok, len = pcall(function()
-            return psapi.GetModuleBaseNameA(process, nil, buffer, 260)
+            return psapi.GetModuleBaseNameW(process, nil, wbuffer, 260)
         end)
         
         -- Safe close for first attempt
@@ -4158,26 +4190,25 @@ local function get_active_process()
         if get_ok and len and len > 0 then
             -- Safely extract string with explicit length limit
             if len > 259 then len = 259 end
-            local name = ffi.string(buffer, len)
-            -- Convert from system ACP (GBK on Chinese Windows) to UTF-8
-            name = acp_to_utf8(name)
-            return string.gsub(name, "%.[eE][xX][eE]$", "")
+            local name = wide_to_utf8(wbuffer, len)
+            if name and name ~= "" then
+                return string.gsub(name, "%.[eE][xX][eE]$", "")
+            end
         end
         
-        -- FALLBACK: Try QueryFullProcessImageNameA with PROCESS_QUERY_LIMITED_INFORMATION
+        -- FALLBACK: Try QueryFullProcessImageNameW with PROCESS_QUERY_LIMITED_INFORMATION
         -- This is needed for games with stricter anti-cheat (ARC Raiders, THE FINALS, etc.)
         -- that block PROCESS_VM_READ
         
-        local process_fallback = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid[0])
+        local process_fallback = kernel32.OpenProcess(WIN.PROCESS_QUERY_LIMITED_INFORMATION, 0, pid[0])
         if is_invalid_handle(process_fallback) then return nil end
         
         local fallback_ok, fallback_result = pcall(function()
             local size = ffi.new("DWORD[1]", 260)
-            local res = kernel32.QueryFullProcessImageNameA(process_fallback, 0, buffer, size)
+            local res = kernel32.QueryFullProcessImageNameW(process_fallback, 0, wbuffer, size)
             if res ~= 0 and size[0] > 0 then
-                local full_path = ffi.string(buffer, size[0])
-                -- Convert from system ACP to UTF-8
-                full_path = acp_to_utf8(full_path)
+                local full_path = wide_to_utf8(wbuffer, size[0])
+                if not full_path then return nil end
                 -- Extract filename from full path
                 local name = string.match(full_path, "([^/\\]+)$") or full_path
                 return string.gsub(name, "%.[eE][xX][eE]$", "")
@@ -4188,29 +4219,6 @@ local function get_active_process()
         kernel32.CloseHandle(process_fallback)
         
         return fallback_ok and fallback_result or nil
-    end)
-
-    return ok and result or nil
-end
-
--- Helper to convert UTF-16 (wide string) to UTF-8
-local MAX_UTF8_BUFFER = 8192
-
-function wide_to_utf8(wide_buffer, wide_len)
-    if not WINDOWS_FFI_AVAILABLE then return nil end
-    if wide_len <= 0 or wide_len > MAX_WIDE_BUFFER then return nil end
-
-    local ok, result = pcall(function()
-        local size_needed = kernel32.WideCharToMultiByte(CP_UTF8, 0, wide_buffer, wide_len, nil, 0, nil, nil)
-        if size_needed <= 0 or size_needed > MAX_UTF8_BUFFER then return nil end
-
-        local utf8_buffer = ffi.new("char[?]", size_needed + 1)
-        local conv_result = kernel32.WideCharToMultiByte(CP_UTF8, 0, wide_buffer, wide_len, utf8_buffer, size_needed, nil, nil)
-
-        if conv_result > 0 then
-            return ffi.string(utf8_buffer, conv_result)
-        end
-        return nil
     end)
 
     return ok and result or nil
@@ -4403,7 +4411,7 @@ end
 local function get_background_game()
     if not WINDOWS_FFI_AVAILABLE then return nil end
     local ok, result = pcall(function()
-        local snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        local snapshot = kernel32.CreateToolhelp32Snapshot(WIN.TH32CS_SNAPPROCESS, 0)
         if is_invalid_handle(snapshot) then return nil end
 
         local pe32 = ffi.new("PROCESSENTRY32")
@@ -4482,18 +4490,19 @@ local function get_existing_folder(root, name)
     local ok, result = pcall(function()
         local search = root .. "/" .. name
         search = string.gsub(search, "/", "\\")
-        -- Convert UTF-8 to ACP (FindFirstFileA expects system codepage, e.g. GBK)
-        local search_acp = utf8_to_acp(search)
 
-        local data = ffi.new("WIN32_FIND_DATAA")
-        local handle = kernel32.FindFirstFileA(search_acp, data)
+        -- FindFirstFileW takes a UTF-16 path -> lossless for any language.
+        local wsearch = utf8_to_wide(search)
+        if not wsearch then return name end
+
+        local data = ffi.new("WIN32_FIND_DATAW")
+        local handle = kernel32.FindFirstFileW(wsearch, data)
 
         if not is_invalid_handle(handle) then
-            local real = ffi.string(data.cFileName)
-            -- Convert ACP result back to UTF-8 for consistent string handling
-            real = acp_to_utf8(real)
+            -- cFileName is UTF-16; measure it, then convert to UTF-8.
+            local real = wide_to_utf8(data.cFileName, wide_strlen(data.cFileName, 260))
             kernel32.FindClose(handle)
-            if real ~= "." and real ~= ".." then
+            if real and real ~= "." and real ~= ".." then
                 return real
             end
         end
@@ -4507,15 +4516,15 @@ local function delete_file(path)
     if not WINDOWS_FFI_AVAILABLE then os.remove(path) return end
     local ok, err = pcall(function()
         path = string.gsub(path, "/", "\\")
-        local len = kernel32.MultiByteToWideChar(CP_UTF8, 0, path, -1, nil, 0)
-        if len > 0 and len <= MAX_PATH then
+        local len = kernel32.MultiByteToWideChar(WIN.CP_UTF8, 0, path, -1, nil, 0)
+        if len > 0 and len <= WIN.MAX_PATH then
             local wpath = ffi.new("unsigned short[?]", len)
-            kernel32.MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, len)
+            kernel32.MultiByteToWideChar(WIN.CP_UTF8, 0, path, -1, wpath, len)
             local result = kernel32.DeleteFileW(wpath)
             if result == 0 then
                 error("DeleteFileW failed")
             end
-        elseif len > MAX_PATH then
+        elseif len > WIN.MAX_PATH then
             error("Path exceeds MAX_PATH limit: " .. len .. " chars")
         end
     end)
@@ -4548,10 +4557,10 @@ local function get_file_size(path)
     end
     local ok, result = pcall(function()
         path = string.gsub(path, "/", "\\")
-        -- Convert UTF-8 to ACP for FindFirstFileA (expects system codepage)
-        local path_acp = utf8_to_acp(path)
-        local data = ffi.new("WIN32_FIND_DATAA")
-        local handle = kernel32.FindFirstFileA(path_acp, data)
+        local wpath = utf8_to_wide(path)  -- UTF-16 path -> lossless for any language
+        if not wpath then return 0 end
+        local data = ffi.new("WIN32_FIND_DATAW")
+        local handle = kernel32.FindFirstFileW(wpath, data)
 
         if not is_invalid_handle(handle) then
             kernel32.FindClose(handle)
@@ -4566,11 +4575,6 @@ end
 -- ============================================================================
 -- FFMPEG SUPPORT (FFI / Sync ShellExecuteEx Method)
 -- ============================================================================
-
--- Constants
-local SEE_MASK_NOCLOSEPROCESS = 0x00000040
-local SW_HIDE = 0
-local INFINITE = 0xFFFFFFFF
 
 local function is_video_file(path)
     if not path then return false end
@@ -4616,13 +4620,13 @@ local function run_task_sync_hidden(commands, unique_id)
     -- Prepare ShellExecuteEx structure
     local sei = ffi.new("SHELLEXECUTEINFOA")
     sei.cbSize = ffi.sizeof("SHELLEXECUTEINFOA")
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS -- We need the process handle to wait
+    sei.fMask = WIN.SEE_MASK_NOCLOSEPROCESS -- We need the process handle to wait
     sei.hwnd = nil
     sei.lpVerb = "open"
     sei.lpFile = "cmd.exe"
     sei.lpParameters = "/c \"" .. bat_path .. "\""
     sei.lpDirectory = nil
-    sei.nShow = SW_HIDE
+    sei.nShow = WIN.SW_HIDE
     sei.hInstApp = nil
 
     -- Execute
@@ -4784,12 +4788,12 @@ local function move_file(src, folder_name, game_name)
             -- If filename didn't change, nothing to do
             if target_path == src then
                 log("No-folder mode: file already in place (no prefix): " .. filename)
-                files_moved = files_moved + 1
+                STATE.files_moved = STATE.files_moved + 1
                 return true
             end
             if obs.os_rename(src, target_path) then
                 log("Renamed (no-folder mode): " .. new_filename)
-                files_moved = files_moved + 1
+                STATE.files_moved = STATE.files_moved + 1
                 return true
             end
             log("ERROR: Failed to rename file in no-folder mode")
@@ -4836,7 +4840,7 @@ local function move_file(src, folder_name, game_name)
         local valid, err = validate_path_length(target_path)
         if not valid then
             dbg("Path too long, truncating filename: " .. err)
-            local max_filename_len = MAX_PATH - #target_dir - 2
+            local max_filename_len = WIN.MAX_PATH - #target_dir - 2
             if max_filename_len < 20 then
                 log("ERROR: Directory path too long, cannot fit filename: " .. target_dir)
                 return false
@@ -4872,7 +4876,7 @@ local function move_file(src, folder_name, game_name)
                 -- Delete original source file since FFmpeg created a new one
                 os.remove(src)
                 
-                files_moved = files_moved + 1
+                STATE.files_moved = STATE.files_moved + 1
                 return true
             else
                 log("FFmpeg failed or produced invalid file. Falling back to standard move.")
@@ -4890,7 +4894,7 @@ local function move_file(src, folder_name, game_name)
             if file_size > 0 then
                 dbg("File size: " .. string.format("%.2f", file_size / 1024 / 1024) .. " MB")
             end
-            files_moved = files_moved + 1
+            STATE.files_moved = STATE.files_moved + 1
             return true
         end
 
@@ -4982,11 +4986,11 @@ local function on_recording_file_changed(calldata)
 
     dbg("File split signal received, next_file: " .. tostring(next_file))
 
-    if recording_folder_name then
+    if STATE.recording_folder_name then
         -- Safety net: if current_recording_file was never set (get_last_file + settings both failed),
         -- try one last time from the recording output we already hold a reference to
-        if (not current_recording_file or current_recording_file == "") and recording_output_ref then
-            local settings = obs.obs_output_get_settings(recording_output_ref)
+        if (not current_recording_file or current_recording_file == "") and STATE.recording_output_ref then
+            local settings = obs.obs_output_get_settings(STATE.recording_output_ref)
             if settings then
                 local path = obs.obs_data_get_string(settings, "path")
                 if not path or path == "" then
@@ -5005,8 +5009,8 @@ local function on_recording_file_changed(calldata)
         if current_recording_file and current_recording_file ~= "" then
             -- Capture values for the closure (they may change by the time the timer fires)
             local file_to_move = current_recording_file
-            local folder = recording_folder_name
-            local game = recording_game_name
+            local folder = STATE.recording_folder_name
+            local game = STATE.recording_game_name
 
             -- Delay move by 300ms to ensure OBS has fully released the file handle
             local function move_split_segment()
@@ -5026,19 +5030,19 @@ local function on_recording_file_changed(calldata)
         -- Update tracking to the new file being written
         current_recording_file = next_file
 
-        log("File split detected - using cached game: " .. recording_folder_name)
+        log("File split detected - using cached game: " .. STATE.recording_folder_name)
     end
 end
 
 local function disconnect_recording_signals()
-    if recording_signal_handler then
-        obs.signal_handler_disconnect(recording_signal_handler, "file_changed", on_recording_file_changed)
-        recording_signal_handler = nil
+    if STATE.recording_signal_handler then
+        obs.signal_handler_disconnect(STATE.recording_signal_handler, "file_changed", on_recording_file_changed)
+        STATE.recording_signal_handler = nil
     end
 
-    if recording_output_ref then
-        obs.obs_output_release(recording_output_ref)
-        recording_output_ref = nil
+    if STATE.recording_output_ref then
+        obs.obs_output_release(STATE.recording_output_ref)
+        STATE.recording_output_ref = nil
     end
 
     dbg("Disconnected recording signals")
@@ -5062,8 +5066,8 @@ local function connect_recording_signals()
 
     obs.signal_handler_connect(sh, "file_changed", on_recording_file_changed)
 
-    recording_output_ref = recording
-    recording_signal_handler = sh
+    STATE.recording_output_ref = recording
+    STATE.recording_signal_handler = sh
 
     dbg("Connected to recording file_changed signal")
     return true
@@ -5091,7 +5095,7 @@ local function check_split_files()
             if current_file and current_file ~= "" and current_file ~= current_recording_file then
                 if current_recording_file and obs.os_file_exists(current_recording_file) then
                     log("Split detected: moving previous segment")
-                    process_file_with_game(current_recording_file, recording_folder_name, recording_game_name)
+                    process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name)
                 end
                 current_recording_file = current_file
                 dbg("Now recording to: " .. current_file)
@@ -5149,7 +5153,7 @@ local function delayed_recording_init()
 
     log("Recording initialized (delayed) - monitoring for file splits")
 
-    local game_info = recording_folder_name or CONFIG.fallback_folder
+    local game_info = STATE.recording_folder_name or CONFIG.fallback_folder
     notify("Recording Started", "Game: " .. game_info)
 end
 
@@ -5240,7 +5244,7 @@ local function on_event(event)
     local ok, err = pcall(function()
         if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED then
             local now = os.time()
-            local diff = now - last_save_time
+            local diff = now - STATE.last_save_time
 
             local path = get_replay_path()
 
@@ -5250,11 +5254,11 @@ local function on_event(event)
                     delete_file(path)
                     log("Duplicate deleted")
                 end
-                files_skipped = files_skipped + 1
+                STATE.files_skipped = STATE.files_skipped + 1
                 return
             end
 
-            last_save_time = now
+            STATE.last_save_time = now
 
             -- Capture file size BEFORE moving — needed for adaptive restart delay.
             -- Must be done here because process_file_with_game() renames the file,
@@ -5310,9 +5314,9 @@ local function on_event(event)
                     local raw_game, folder_name
 
                     -- Cache detection for 2 seconds to handle bursts
-                    if now - last_detection_time < 2.0 and cache_folder_name then
-                        raw_game = cache_raw_game
-                        folder_name = cache_folder_name
+                    if now - STATE.last_detection_time < 2.0 and STATE.cache_folder_name then
+                        raw_game = STATE.cache_raw_game
+                        folder_name = STATE.cache_folder_name
                         dbg("Using detection cache for rapid screenshot burst")
                     else
                         local r, w, s = detect_game()
@@ -5320,20 +5324,20 @@ local function on_event(event)
                         raw_game = r
 
                         -- Update cache
-                        cache_raw_game = r
-                        cache_folder_name = folder_name
-                        last_detection_time = now
+                        STATE.cache_raw_game = r
+                        STATE.cache_folder_name = folder_name
+                        STATE.last_detection_time = now
                     end
 
                     process_file_with_game(path, folder_name, raw_game)
 
                     -- Throttle notifications (0.5s) to prevent UI overload
-                    if now - last_screenshot_notify_time > 0.5 then
+                    if now - STATE.last_screenshot_notify_time > 0.5 then
                         notify("Screenshot Saved", "Moved to: " .. folder_name)
-                        last_screenshot_notify_time = now
+                        STATE.last_screenshot_notify_time = now
                     end
 
-                    last_screenshot_time = now
+                    STATE.last_screenshot_time = now
                 end
             end
 
@@ -5341,14 +5345,14 @@ local function on_event(event)
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTING then
             if CONFIG.organize_recordings then
                 local raw_game, window_title, skip_fallback = detect_game()
-                recording_game_name = raw_game
-                recording_folder_name = get_game_folder(raw_game, window_title, skip_fallback)
+                STATE.recording_game_name = raw_game
+                STATE.recording_folder_name = get_game_folder(raw_game, window_title, skip_fallback)
                 current_recording_file = nil
 
                 if raw_game then
-                    log("Recording starting - Game detected: " .. raw_game .. " -> " .. recording_folder_name)
+                    log("Recording starting - Game detected: " .. raw_game .. " -> " .. STATE.recording_folder_name)
                 else
-                    log("Recording starting - No game detected, using: " .. recording_folder_name)
+                    log("Recording starting - No game detected, using: " .. STATE.recording_folder_name)
                 end
             end
 
@@ -5374,7 +5378,7 @@ local function on_event(event)
                 obs.timer_remove(check_split_files)
 
                 local now = os.time()
-                local diff = now - last_recording_time
+                local diff = now - STATE.last_recording_time
 
                 local path = get_recording_path()
 
@@ -5384,16 +5388,16 @@ local function on_event(event)
                         delete_file(path)
                         log("Duplicate recording deleted")
                     end
-                    files_skipped = files_skipped + 1
+                    STATE.files_skipped = STATE.files_skipped + 1
                 else
-                    last_recording_time = now
+                    STATE.last_recording_time = now
 
-                    local saved_folder = recording_folder_name or CONFIG.fallback_folder
+                    local saved_folder = STATE.recording_folder_name or CONFIG.fallback_folder
 
                     if path then
                         log("Recording stopped - organizing file")
-                        if recording_folder_name then
-                            process_file_with_game(path, recording_folder_name, recording_game_name)
+                        if STATE.recording_folder_name then
+                            process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name)
                         else
                             process_file(path)
                         end
@@ -5404,8 +5408,8 @@ local function on_event(event)
 
                 disconnect_recording_signals()
 
-                recording_game_name = nil
-                recording_folder_name = nil
+                STATE.recording_game_name = nil
+                STATE.recording_folder_name = nil
                 current_recording_file = nil
             end
         end
@@ -5421,13 +5425,13 @@ end
 -- ============================================================================
 
 local function add_custom_mapping(props, p)
-    if not script_settings then
+    if not STATE.script_settings then
         log("ERROR: Settings not loaded yet")
         return false
     end
 
-    local process = obs.obs_data_get_string(script_settings, "new_process_name")
-    local folder = obs.obs_data_get_string(script_settings, "new_folder_name")
+    local process = obs.obs_data_get_string(STATE.script_settings, "new_process_name")
+    local folder = obs.obs_data_get_string(STATE.script_settings, "new_folder_name")
 
     process = string.gsub(process or "", "^%s+", "")
     process = string.gsub(process, "%s+$", "")
@@ -5445,7 +5449,7 @@ local function add_custom_mapping(props, p)
 
     local entry = process .. " > " .. folder
 
-    local array = obs.obs_data_get_array(script_settings, "custom_names")
+    local array = obs.obs_data_get_array(STATE.script_settings, "custom_names")
     if not array then
         array = obs.obs_data_array_create()
     end
@@ -5455,13 +5459,13 @@ local function add_custom_mapping(props, p)
     obs.obs_data_array_push_back(array, item)
     obs.obs_data_release(item)
 
-    obs.obs_data_set_array(script_settings, "custom_names", array)
+    obs.obs_data_set_array(STATE.script_settings, "custom_names", array)
     obs.obs_data_array_release(array)
 
-    obs.obs_data_set_string(script_settings, "new_process_name", "")
-    obs.obs_data_set_string(script_settings, "new_folder_name", "")
+    obs.obs_data_set_string(STATE.script_settings, "new_process_name", "")
+    obs.obs_data_set_string(STATE.script_settings, "new_folder_name", "")
 
-    load_custom_names(script_settings)
+    load_custom_names(STATE.script_settings)
 
     log("Added custom mapping: " .. process .. " -> " .. folder)
     return true
@@ -5473,7 +5477,7 @@ local function get_default_export_path()
 end
 
 local function export_custom_names(path)
-    if not script_settings then
+    if not STATE.script_settings then
         log("ERROR: Settings not loaded yet")
         return false
     end
@@ -5496,7 +5500,7 @@ local function export_custom_names(path)
         file:write("# Format: process_name > Folder Name\n")
         file:write("# Lines starting with # are comments\n\n")
 
-        local array = obs.obs_data_get_array(script_settings, "custom_names")
+        local array = obs.obs_data_get_array(STATE.script_settings, "custom_names")
         if array then
             local arr_count = obs.obs_data_array_count(array)
             for i = 0, arr_count - 1 do
@@ -5529,7 +5533,7 @@ local function export_custom_names(path)
 end
 
 local function import_custom_names(path, props)
-    if not script_settings then
+    if not STATE.script_settings then
         log("ERROR: Settings not loaded yet")
         return false
     end
@@ -5573,7 +5577,7 @@ local function import_custom_names(path, props)
     end
 
     if count > 0 then
-        local array = obs.obs_data_get_array(script_settings, "custom_names")
+        local array = obs.obs_data_get_array(STATE.script_settings, "custom_names")
         if not array then
             array = obs.obs_data_array_create()
         end
@@ -5585,10 +5589,10 @@ local function import_custom_names(path, props)
             obs.obs_data_release(item)
         end
 
-        obs.obs_data_set_array(script_settings, "custom_names", array)
+        obs.obs_data_set_array(STATE.script_settings, "custom_names", array)
         obs.obs_data_array_release(array)
 
-        load_custom_names(script_settings)
+        load_custom_names(STATE.script_settings)
         log("Imported " .. count .. " custom name(s) from: " .. path)
     else
         log("No valid entries found in file")
@@ -5598,21 +5602,21 @@ local function import_custom_names(path, props)
 end
 
 local function on_export_clicked(props, p)
-    if not script_settings then
+    if not STATE.script_settings then
         log("ERROR: Settings not loaded yet")
         return false
     end
-    local path = obs.obs_data_get_string(script_settings, "import_export_path")
+    local path = obs.obs_data_get_string(STATE.script_settings, "import_export_path")
     export_custom_names(path)
     return false
 end
 
 local function on_import_clicked(props, p)
-    if not script_settings then
+    if not STATE.script_settings then
         log("ERROR: Settings not loaded yet")
         return false
     end
-    local path = obs.obs_data_get_string(script_settings, "import_export_path")
+    local path = obs.obs_data_get_string(STATE.script_settings, "import_export_path")
     if path == "" then
         path = get_default_export_path()
         log("No path specified, using default: " .. path)
@@ -5682,7 +5686,7 @@ end
 
 -- Helper function to read configuration from settings
 local function read_config(settings)
-    script_settings = settings
+    STATE.script_settings = settings
 
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
@@ -5716,8 +5720,8 @@ local function parse_startup_update_result()
     
     local file = io.open(GITHUB_VERSION_FILE, "r")
     if not file then
-        startup_update_status = "⚠️ Update check failed"
-        startup_update_check_done = true
+        STATE.startup_update_status = "⚠️ Update check failed"
+        STATE.startup_update_check_done = true
         return
     end
     
@@ -5726,31 +5730,31 @@ local function parse_startup_update_result()
     pcall(os.remove, GITHUB_VERSION_FILE)
     
     if not content or not content:match("^-- Smart Replay Mover") then
-        startup_update_status = "⚠️ Update check failed"
+        STATE.startup_update_status = "⚠️ Update check failed"
     else
         local latest_version = content:match("Smart Replay Mover v?(%d+%.%d+%.?[%d]*)")
         if latest_version then
             latest_version = latest_version:gsub("^%s*(.-)%s*$", "%1")
             
             if latest_version == VERSION then
-                startup_update_status = "✅ Up to date (v" .. VERSION .. ")"
+                STATE.startup_update_status = "✅ Up to date (v" .. VERSION .. ")"
             elseif compare_versions(latest_version, VERSION) then
-                startup_update_status = "🆕 New version available: v" .. latest_version
+                STATE.startup_update_status = "🆕 New version available: v" .. latest_version
             else
-                startup_update_status = "✅ Dev version (v" .. VERSION .. ")"
+                STATE.startup_update_status = "✅ Dev version (v" .. VERSION .. ")"
             end
         else
-            startup_update_status = "⚠️ Parse error"
+            STATE.startup_update_status = "⚠️ Parse error"
         end
     end
     
-    startup_update_check_done = true
-    log("Update Check: " .. startup_update_status)
+    STATE.startup_update_check_done = true
+    log("Update Check: " .. STATE.startup_update_status)
     
     -- Trigger UI refresh by toggling hidden property
-    if script_settings then
-        local current = obs.obs_data_get_bool(script_settings, "__startup_refresh")
-        obs.obs_data_set_bool(script_settings, "__startup_refresh", not current)
+    if STATE.script_settings then
+        local current = obs.obs_data_get_bool(STATE.script_settings, "__startup_refresh")
+        obs.obs_data_set_bool(STATE.script_settings, "__startup_refresh", not current)
     end
 end
 
@@ -5762,10 +5766,10 @@ local function parse_update_result()
     if not file then
         -- This can happen if the download failed completely or was blocked,
         -- resulting in no output file.
-        update_status_msg = "❌ Check failed: No response"
+        STATE.update_status_msg = "❌ Check failed: No response"
         obs.timer_remove(parse_update_result)
         dbg("Update file not found: " .. tostring(err))
-        if script_settings then obs.obs_data_set_string(script_settings, "check_updates_status", update_status_msg) end
+        if STATE.script_settings then obs.obs_data_set_string(STATE.script_settings, "check_updates_status", STATE.update_status_msg) end
         return
     end
 
@@ -5776,7 +5780,7 @@ local function parse_update_result()
     end)
     
     if not read_ok then
-        update_status_msg = "❌ Check failed: Read error"
+        STATE.update_status_msg = "❌ Check failed: Read error"
         obs.timer_remove(parse_update_result)
         dbg("Failed to read update file: " .. tostring(read_err))
         return
@@ -5789,9 +5793,9 @@ local function parse_update_result()
     -- This prevents parsing HTML error pages or other invalid data.
     if not content or not content:match("^-- Smart Replay Mover") then
         if content and content:match("404: Not Found") then
-            update_status_msg = "❌ Check failed: File Not Found (404)"
+            STATE.update_status_msg = "❌ Check failed: File Not Found (404)"
         else
-            update_status_msg = "❌ Check failed: Invalid response"
+            STATE.update_status_msg = "❌ Check failed: Invalid response"
         end
     else
         -- Try to find the version number in the downloaded script content.
@@ -5804,33 +5808,33 @@ local function parse_update_result()
             
             -- Compare the latest version from GitHub with the current script version.
             if latest_version == VERSION then
-                update_status_msg = "✅ You are up to date (v" .. VERSION .. ")"
+                STATE.update_status_msg = "✅ You are up to date (v" .. VERSION .. ")"
             elseif compare_versions(latest_version, VERSION) then
-                update_status_msg = "🎁 New update: v" .. latest_version .. "!"
+                STATE.update_status_msg = "🎁 New update: v" .. latest_version .. "!"
             else
                 -- This case handles when the local version is newer than the one on GitHub,
                 -- which can happen during development or testing.
-                update_status_msg = "✅ Running test version (v" .. VERSION .. ")"
+                STATE.update_status_msg = "✅ Running test version (v" .. VERSION .. ")"
             end
         else
             -- This happens if the downloaded file is the script but has a malformed version string.
-            update_status_msg = "❌ Check failed: Cannot parse version"
+            STATE.update_status_msg = "❌ Check failed: Cannot parse version"
         end
     end
 
     -- Stop the timer and update the status in the UI.
     obs.timer_remove(parse_update_result)
     
-    if script_settings then
-        obs.obs_data_set_string(script_settings, "check_updates_status", update_status_msg)
+    if STATE.script_settings then
+        obs.obs_data_set_string(STATE.script_settings, "check_updates_status", STATE.update_status_msg)
     end
     
-    log("Update Check Result: " .. update_status_msg)
+    log("Update Check Result: " .. STATE.update_status_msg)
 
     -- Toggle the hidden boolean property to trigger the modified callback,
     -- which returns true and forces a UI refresh.
-    if script_settings then
-        obs.obs_data_set_bool(script_settings, "__ui_refresh_trigger", not obs.obs_data_get_bool(script_settings, "__ui_refresh_trigger"))
+    if STATE.script_settings then
+        obs.obs_data_set_bool(STATE.script_settings, "__ui_refresh_trigger", not obs.obs_data_get_bool(STATE.script_settings, "__ui_refresh_trigger"))
     end
 end
 
@@ -5845,13 +5849,13 @@ local function refresh_update_status(props, p)
     -- Get the update_info property and change its description to current status
     local update_prop = obs.obs_properties_get(props, "update_info")
     if update_prop then
-        obs.obs_property_set_description(update_prop, startup_update_status)
+        obs.obs_property_set_description(update_prop, STATE.startup_update_status)
     end
     
     -- Show/hide the download button based on whether update is available
     local link_prop = obs.obs_properties_get(props, "open_releases_btn")
     if link_prop then
-        obs.obs_property_set_visible(link_prop, startup_update_status:match("🆕") ~= nil)
+        obs.obs_property_set_visible(link_prop, STATE.startup_update_status:match("🆕") ~= nil)
     end
     
     return true
@@ -5878,12 +5882,12 @@ local function check_for_updates(props, p)
 	-- Start a new check
 	update_check_in_progress = true
 	button_text = "           ⏳ Checking... (Click again in 5s)           "
-	update_status_msg = "⏳ Connecting to GitHub..." -- Show status immediately
+	STATE.update_status_msg = "⏳ Connecting to GitHub..." -- Show status immediately
 
     -- Force UI refresh by toggling a dummy setting
-    if script_settings then
-        local dummy = obs.obs_data_get_bool(script_settings, "__ui_refresh_trigger")
-        obs.obs_data_set_bool(script_settings, "__ui_refresh_trigger", not dummy)
+    if STATE.script_settings then
+        local dummy = obs.obs_data_get_bool(STATE.script_settings, "__ui_refresh_trigger")
+        obs.obs_data_set_bool(STATE.script_settings, "__ui_refresh_trigger", not dummy)
     end
 
 	if kernel32 then
@@ -5897,7 +5901,7 @@ local function check_for_updates(props, p)
 		kernel32.WinExec(cmd, 0)
 		obs.timer_add(parse_update_result, 4000) -- Increased to 4s
 	else
-		update_status_msg = "❌ Error: kernel32 missing"
+		STATE.update_status_msg = "❌ Error: kernel32 missing"
 		update_check_in_progress = false
 		button_text = "                  🔄  Check for Updates                  "
 	end
@@ -5909,11 +5913,11 @@ function script_properties()
     local props = obs.obs_properties_create()
 
     -- UPDATE STATUS (FIRST ELEMENT - shown at top of UI)
-    obs.obs_properties_add_text(props, "update_info", startup_update_status, obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(props, "update_info", STATE.startup_update_status, obs.OBS_TEXT_INFO)
     
     -- Download button - opens releases page in browser (hidden until update available)
     local download_btn = obs.obs_properties_add_button(props, "open_releases_btn", "📥 Download Update", open_releases_url)
-    obs.obs_property_set_visible(download_btn, startup_update_status:match("🆕") ~= nil)
+    obs.obs_property_set_visible(download_btn, STATE.startup_update_status:match("🆕") ~= nil)
     
     -- Refresh button - clicking updates the status display
     obs.obs_properties_add_button(props, "refresh_status_btn", "🔄 Refresh Status", refresh_update_status)
@@ -6140,8 +6144,8 @@ end
 function script_load(settings)
     -- Reset update status on every load so stale results from previous
     -- sessions don't persist (users would see old "✅ Up to date" forever)
-    startup_update_status = "📦 v" .. VERSION
-    startup_update_check_done = false
+    STATE.startup_update_status = "📦 v" .. VERSION
+    STATE.startup_update_check_done = false
 
     destroy_orphaned_notifications()
 
@@ -6204,8 +6208,8 @@ function script_load(settings)
             dbg("Auto update check started")
         end)
     else
-        startup_update_status = "⚠️ Check unavailable"
-        startup_update_check_done = true
+        STATE.startup_update_status = "⚠️ Check unavailable"
+        STATE.startup_update_check_done = true
     end
 
     -- AUTO-START REPLAY BUFFER (5s delay for OBS to fully initialize)
@@ -6235,7 +6239,7 @@ function script_unload()
     obs.timer_remove(buffer_restart_safety_timeout) -- Cancel safety restart timeout
     obs.timer_remove(verify_buffer_started)         -- Cancel buffer verification retries
     obs.timer_remove(start_buffer_delayed)           -- Cancel pending buffer start
-    notification_timer_should_stop = true
+    STATE.notification_timer_should_stop = true
     notification_queue = {}                        -- Discard any pending notifications
 
     disconnect_recording_signals()
@@ -6248,14 +6252,14 @@ function script_unload()
 
     split_files = {}
     current_recording_file = nil
-    recording_game_name = nil
-    recording_folder_name = nil
+    STATE.recording_game_name = nil
+    STATE.recording_folder_name = nil
 
-    log("Session: " .. files_moved .. " moved, " .. files_skipped .. " skipped")
+    log("Session: " .. STATE.files_moved .. " moved, " .. STATE.files_skipped .. " skipped")
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.9.3
+-- END OF SCRIPT v2.9.4
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
