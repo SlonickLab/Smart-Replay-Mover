@@ -3910,6 +3910,18 @@ local function recursive_mkdir(path)
     return obs.os_file_exists(path)
 end
 
+-- UTF-8 safe string truncation: ensures we never cut in the middle of a multi-byte character
+function utf8_truncate(str, max_bytes)
+    if not str or #str <= max_bytes then return str end
+    -- Walk backwards from max_bytes to avoid splitting a UTF-8 continuation byte
+    while max_bytes > 0 do
+        local b = string.byte(str, max_bytes + 1)
+        if not b or b < 0x80 or b >= 0xC0 then break end
+        max_bytes = max_bytes - 1
+    end
+    return string.sub(str, 1, max_bytes)
+end
+
 -- Truncate filename to fit within MAX_PATH limit
 local function truncate_filename(filename, max_len)
     if not filename or #filename <= max_len then
@@ -3927,7 +3939,7 @@ local function truncate_filename(filename, max_len)
         keep_len = 10
     end
 
-    return string.sub(name, 1, keep_len) .. "..." .. ext
+    return utf8_truncate(name, keep_len) .. "..." .. ext
 end
 
 -- Validate path length
@@ -4071,6 +4083,53 @@ end
 -- GAME DETECTION
 -- ============================================================================
 
+-- Convert a raw byte string from the system ACP (e.g. GBK on Chinese Windows)
+-- to UTF-8. Used to fix garbled Chinese process names from GetModuleBaseNameA.
+-- Returns the original string unchanged if the conversion fails.
+function acp_to_utf8(str)
+    if not str or str == "" or not kernel32 then return str end
+    local ok, result = pcall(function()
+        local wlen = kernel32.MultiByteToWideChar(0, 0, str, -1, nil, 0)
+        if wlen <= 0 or wlen > MAX_WIDE_BUFFER then
+            log("acp_to_utf8: MultiByteToWideChar query FAILED (wlen=" .. tostring(wlen) .. ", input_len=" .. #str .. ")")
+            return str
+        end
+        local wbuf = ffi.new("unsigned short[?]", wlen)
+        local conv1 = kernel32.MultiByteToWideChar(0, 0, str, -1, wbuf, wlen)
+        if conv1 == 0 then
+            log("acp_to_utf8: MultiByteToWideChar convert FAILED ( GetLastError=" .. tostring(kernel32.GetLastError and kernel32.GetLastError() or "?") .. ")")
+            return str
+        end
+        local utf8 = wide_to_utf8(wbuf, wlen - 1)
+        if not utf8 then
+            log("acp_to_utf8: wide_to_utf8 returned nil (wlen=" .. tostring(wlen) .. ")")
+            return str
+        end
+        log("acp_to_utf8: OK '" .. str .. "' -> '" .. utf8 .. "'")
+        return utf8
+    end)
+    if not ok then log("acp_to_utf8 EXCEPTION: " .. tostring(result)) end
+    return ok and result or str
+end
+
+-- Convert a UTF-8 string to the system ACP (e.g. GBK on Chinese Windows).
+-- Used when calling Win32 ANSI APIs that expect ACP-encoded strings.
+function utf8_to_acp(str)
+    if not str or str == "" or not kernel32 then return str end
+    local ok, result = pcall(function()
+        local wlen = kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, nil, 0)
+        if wlen <= 0 or wlen > MAX_WIDE_BUFFER then return str end
+        local wbuf = ffi.new("unsigned short[?]", wlen)
+        kernel32.MultiByteToWideChar(CP_UTF8, 0, str, -1, wbuf, wlen)
+        local acp_len = kernel32.WideCharToMultiByte(0, 0, wbuf, wlen, nil, 0, nil, nil)
+        if acp_len <= 0 or acp_len > MAX_WIDE_BUFFER * 2 then return str end
+        local acp_buf = ffi.new("char[?]", acp_len)
+        kernel32.WideCharToMultiByte(0, 0, wbuf, wlen, acp_buf, acp_len, nil, nil)
+        return ffi.string(acp_buf, acp_len - 1)
+    end)
+    return ok and result or str
+end
+
 local function get_active_process()
     if not WINDOWS_FFI_AVAILABLE then return nil end
     local ok, result = pcall(function()
@@ -4100,6 +4159,8 @@ local function get_active_process()
             -- Safely extract string with explicit length limit
             if len > 259 then len = 259 end
             local name = ffi.string(buffer, len)
+            -- Convert from system ACP (GBK on Chinese Windows) to UTF-8
+            name = acp_to_utf8(name)
             return string.gsub(name, "%.[eE][xX][eE]$", "")
         end
         
@@ -4115,6 +4176,8 @@ local function get_active_process()
             local res = kernel32.QueryFullProcessImageNameA(process_fallback, 0, buffer, size)
             if res ~= 0 and size[0] > 0 then
                 local full_path = ffi.string(buffer, size[0])
+                -- Convert from system ACP to UTF-8
+                full_path = acp_to_utf8(full_path)
                 -- Extract filename from full path
                 local name = string.match(full_path, "([^/\\]+)$") or full_path
                 return string.gsub(name, "%.[eE][xX][eE]$", "")
@@ -4133,7 +4196,7 @@ end
 -- Helper to convert UTF-16 (wide string) to UTF-8
 local MAX_UTF8_BUFFER = 8192
 
-local function wide_to_utf8(wide_buffer, wide_len)
+function wide_to_utf8(wide_buffer, wide_len)
     if not WINDOWS_FFI_AVAILABLE then return nil end
     if wide_len <= 0 or wide_len > MAX_WIDE_BUFFER then return nil end
 
@@ -4419,12 +4482,16 @@ local function get_existing_folder(root, name)
     local ok, result = pcall(function()
         local search = root .. "/" .. name
         search = string.gsub(search, "/", "\\")
+        -- Convert UTF-8 to ACP (FindFirstFileA expects system codepage, e.g. GBK)
+        local search_acp = utf8_to_acp(search)
 
         local data = ffi.new("WIN32_FIND_DATAA")
-        local handle = kernel32.FindFirstFileA(search, data)
+        local handle = kernel32.FindFirstFileA(search_acp, data)
 
         if not is_invalid_handle(handle) then
             local real = ffi.string(data.cFileName)
+            -- Convert ACP result back to UTF-8 for consistent string handling
+            real = acp_to_utf8(real)
             kernel32.FindClose(handle)
             if real ~= "." and real ~= ".." then
                 return real
@@ -4481,8 +4548,10 @@ local function get_file_size(path)
     end
     local ok, result = pcall(function()
         path = string.gsub(path, "/", "\\")
+        -- Convert UTF-8 to ACP for FindFirstFileA (expects system codepage)
+        local path_acp = utf8_to_acp(path)
         local data = ffi.new("WIN32_FIND_DATAA")
-        local handle = kernel32.FindFirstFileA(path, data)
+        local handle = kernel32.FindFirstFileA(path_acp, data)
 
         if not is_invalid_handle(handle) then
             kernel32.FindClose(handle)
