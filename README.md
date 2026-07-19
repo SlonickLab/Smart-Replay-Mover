@@ -6,14 +6,14 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.9.4-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.10.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
 
   [Features](#-features) • [Installation](#-installation) • [How It Works](#-how-it-works) • [Configuration](#%EF%B8%8F-configuration) • [Custom Names](#-custom-names)
   <br>
-  [Notifications](#-notification-system) • [FFmpeg Setup](#%EF%B8%8F-video-thumbnails-ffmpeg) • [Troubleshooting](#-troubleshooting) • [Changelog](#-changelog)
+  [Notifications](#-notification-system) • [FFmpeg Setup](#%EF%B8%8F-video-thumbnails-ffmpeg) • [Replay Buffer Pro](#-replay-buffer-pro-support) • [Troubleshooting](#-troubleshooting) • [Changelog](#-changelog)
 
   ---
 
@@ -68,6 +68,7 @@
 - **Screenshots** — Optional organization
 - **File Splitting** — Handles long recording segments correctly
 - **🖼️ FFmpeg Thumbnails** — Optional cover art embedding for your clips (Windows & Linux)
+- **🔌 Replay Buffer Pro Compatible** — Waits for the trim-after-save plugin to finish, then organizes the final trimmed clip
 
 ### 🛡️ Quality of Life
 
@@ -194,6 +195,13 @@
   | Auto-restart after save | Stops and restarts buffer after each save (prevents overlap) |
   | Auto-start on launch | Automatically starts Replay Buffer when OBS opens |
   | Smart Save Hotkey | Assign in OBS Settings → Hotkeys → "Smart Save Replay" for instant feedback |
+
+### 🎬 Replay Buffer Pro
+
+  | Setting | Description |
+  |---------|-------------|
+  | Mode | Auto-Detect (default — activates only when the plugin is installed), Always On, or Off |
+  | Remove "_trimmed" suffix | Renames Replay Buffer Pro's trimmed clip back to a clean name while organizing (on by default) |
 
 ### 🗂️ Organization
 
@@ -467,7 +475,32 @@
 
   ---
 
+## 🔌 Replay Buffer Pro Support
+
+  Smart Replay Mover is fully compatible with [Replay Buffer Pro](https://github.com/JoshuaPotter/replay-buffer-pro) — the plugin that saves your replay buffer at custom lengths (15s / 30s / 5min…) and trims the file in the background without re-encoding.
+
+  **How it works together:** when a replay is saved, the script no longer moves it instantly. Each save goes into a **deferred move queue** — the script watches the original file and the plugin's `_trimmed` file, waits until trimming is finished, and only then organizes the final clip into your game folder (removing the `_trimmed` suffix by default). While Replay Buffer Pro mode is active, spam protection switches to path-based deduplication: rapid saves of different durations are all kept, and **no files are ever auto-deleted**.
+
+  **Setup:** none. Install the plugin, restart OBS, and the script auto-detects it — the Script Log will show `Replay Buffer Pro integration: ACTIVE (mode: auto)`. If your setup doesn't show that line, set **🎬 REPLAY BUFFER PRO → Mode** to **Always On** in the script settings.
+
+  > 💙 Built with the blessing of Replay Buffer Pro's author — see [JoshuaPotter/replay-buffer-pro#23](https://github.com/JoshuaPotter/replay-buffer-pro/issues/23). If the plugin's file naming ever changes, its author will open an issue here so compatibility can be maintained.
+
+  ---
+
 ## 📋 Changelog
+
+### v2.10.0 — 🔌 Replay Buffer Pro Compatibility
+
+- **🔌 Replay Buffer Pro Integration** — Full compatibility with the [Replay Buffer Pro](https://github.com/JoshuaPotter/replay-buffer-pro) plugin, built with its author's blessing ([JoshuaPotter/replay-buffer-pro#23](https://github.com/JoshuaPotter/replay-buffer-pro/issues/23)). Replays now go through a **deferred move queue**: the script waits for the plugin's background trim to finish, then organizes the final clip. New **🎬 REPLAY BUFFER PRO** settings group (Mode: Auto-Detect / Always On / Off).
+- **✂️ Clean Names** — The `_trimmed` suffix the plugin leaves on clips is removed during organizing (optional, on by default).
+- **🛡️ Smarter Spam Protection** — In Replay Buffer Pro mode duplicates are detected by file path, so rapid saves of different durations (15s/30s/60s hotkeys) are all kept — and files are never auto-deleted.
+- **🛡️ Collision-Safe Naming** — New clips get a `name (2).mp4` suffix instead of silently overwriting an existing file with the same name in the target folder.
+- **🐛 Crash-Safety** — The recording `file_changed` signal handler is now `pcall`-guarded like every other callback.
+
+### v2.9.5 — 🔔 Notification Toggle Fix
+
+- **🔔 Popup Toggle Fixed** — The visual popup now respects the **Show visual popup** setting. Previously it appeared on every save even when disabled (the setting was read but never checked on the display path); the sound notification was unaffected. Sound stays independently controlled by **Play sound**, and the **Test** button follows the same toggle. (Thanks @Htwm5, [Issue #25](https://github.com/SlonickLab/Smart-Replay-Mover/issues/25))
+- **🖼️ Wallpaper Engine Ignored** — Added `wallpaperui` to the ignore list so Wallpaper Engine's interface isn't mistaken for a game.
 
 ### v2.9.4 — 🌍 Multi-Language Folder Names
 
