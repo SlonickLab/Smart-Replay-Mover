@@ -5094,6 +5094,7 @@ local function process_move_queue()
 
             if now > job.hard_deadline then
                 log("WARNING: Move job exceeded 30min hard cap, dropping (file kept): " .. job.path)
+                STATE.files_skipped = STATE.files_skipped + 1
                 done = true
             elseif age >= grace then
                 local x_exists = obs.os_file_exists(job.path)
@@ -5133,12 +5134,14 @@ local function process_move_queue()
                     end
                 else
                     dbg("Queued replay no longer on disk (external consumer?): " .. job.path)
+                    STATE.files_skipped = STATE.files_skipped + 1
                     done = true
                 end
 
                 if not done and now > job.deadline then
                     log("ERROR: Could not organize replay within 120s, leaving in place: " .. job.path)
                     notify("Move Failed", "File left in place")
+                    STATE.files_skipped = STATE.files_skipped + 1
                     done = true  -- never delete, just stop tracking
                 end
             end
