@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.9.4
+-- Smart Replay Mover v2.10.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.9.4"
+local VERSION = "2.10.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,18 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.10.0:
+--   - NEW: Replay Buffer Pro compatibility (github.com/JoshuaPotter/replay-buffer-pro).
+--         Replays now go through a deferred move queue: the script waits for RBP's
+--         background trim (the "X_trimmed" file) to finish, then organizes the final
+--         clip. New "REPLAY BUFFER PRO" settings group: Mode (Auto-Detect / Always On /
+--         Off) + optional "_trimmed" suffix removal (on by default)
+--   - NEW: Collision-safe naming - " (2)", " (3)" suffix instead of silently
+--         overwriting an existing file with the same name in the target folder
+--   - In RBP mode spam protection dedupes by file path, so rapid saves of different
+--         durations (15s/30s/60s hotkeys) are all kept; files are never auto-deleted
+--   - FIX: file_changed signal handler is now pcall-guarded (crash-safety)
+
 -- CHANGELOG v2.9.4:
 --   - FIX: Folders for non-Latin game names (Chinese/Japanese/Korean/Cyrillic) are now
 --         correct instead of garbled "mojibake" (Thanks @YxlaGyb, PR #24)
@@ -263,6 +275,9 @@ local CONFIG = {
     auto_start_buffer = false,
     -- Process scan detection
     scan_all_processes = false,
+    -- Replay Buffer Pro compatibility
+    rbp_mode = "auto",
+    strip_trimmed_suffix = true,
 }
 
 -- State tracking for buffer restart
@@ -2586,7 +2601,7 @@ local IGNORE_LIST = {
     -- ═══════════════════════════════════════════════════════════════
     -- DESKTOP CUSTOMIZATION
     -- ═══════════════════════════════════════════════════════════════
-    "ui32", "wallpaper32", "wallpaper64", "wallpaperengine",
+    "ui32", "wallpaper32", "wallpaper64", "wallpaperengine", "wallpaperui",
     "rainmeter", "fences", "objectdock",
 
     -- ═══════════════════════════════════════════════════════════════
@@ -2897,6 +2912,13 @@ local STATE = {
     update_status_msg = "v" .. VERSION,
     startup_update_status = "📦 v" .. VERSION,
     startup_update_check_done = false,
+
+    -- Deferred replay move queue (v2.10.0 - Replay Buffer Pro compatibility)
+    pending_moves = {},
+    move_timer_running = false,
+    rbp_active = false,
+    last_flushed_path = nil,
+    last_flushed_time = 0,
 }
 
 -- ============================================================================
@@ -2970,6 +2992,7 @@ if IS_WINDOWS and ffi then
             int MultiByteToWideChar(unsigned int CodePage, DWORD dwFlags, LPCSTR lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar);
             int WideCharToMultiByte(unsigned int CodePage, DWORD dwFlags, const wchar_t* lpWideCharStr, int cchWideChar, char* lpMultiByteStr, int cbMultiByte, const char* lpDefaultChar, int* lpUsedDefaultChar);
             BOOL DeleteFileW(LPCWSTR lpFileName);
+            HANDLE CreateFileW(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, void* lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
             BOOL IsWindow(HWND hWnd);
 
             // Toolhelp32 Snapshot
@@ -3226,6 +3249,11 @@ local WIN = {
     MAX_WIDE_BUFFER = 4096,
     MAX_UTF8_BUFFER = 8192,
     INFINITE = 0xFFFFFFFF,
+
+    -- File access (exclusive-open probe for the deferred move queue)
+    GENERIC_READ = 0x80000000,
+    OPEN_EXISTING = 3,
+    FILE_ATTRIBUTE_NORMAL = 0x80,
 
     -- HWND_TOPMOST is assigned below (needs a runtime ffi.cast)
     HWND_TOPMOST = nil,
@@ -3707,6 +3735,10 @@ end
 
 -- Show notification popup
 local function show_notification(title, message)
+    -- Respect the "Show visual popup" toggle. Gates BOTH the Win32 popup and the
+    -- Linux notify-send path below. Sound is gated separately by CONFIG.play_sound.
+    if not CONFIG.show_notifications then return end
+
     if not VISUAL_NOTIFICATIONS_SUPPORTED then
         if not IS_WINDOWS and command_exists("notify-send") then
             local timeout_ms = math.max(1000, math.floor((CONFIG.notification_duration or 3.0) * 1000))
@@ -4572,6 +4604,33 @@ local function get_file_size(path)
     return ok and result or 0
 end
 
+-- Milliseconds for deferred-queue timing (monotonic when os_gettime_ns exists)
+local function now_ms()
+    if obs.os_gettime_ns then
+        return obs.os_gettime_ns() / 1000000
+    end
+    return os.time() * 1000
+end
+
+-- TRUE if no other process holds the file open (Windows exclusive-open probe).
+-- Without FFI (or on Linux) always TRUE - size stability is the only guard there.
+local function is_file_unlocked(path)
+    if not WINDOWS_FFI_AVAILABLE then return true end
+    local ok, result = pcall(function()
+        local wpath = utf8_to_wide((string.gsub(path, "/", "\\")))
+        if not wpath then return true end
+        local handle = kernel32.CreateFileW(wpath, WIN.GENERIC_READ, 0, nil,
+                                            WIN.OPEN_EXISTING, WIN.FILE_ATTRIBUTE_NORMAL, nil)
+        if is_invalid_handle(handle) then
+            return false
+        end
+        kernel32.CloseHandle(handle)
+        return true
+    end)
+    if not ok then return true end  -- probe error: fail open, the move attempt decides
+    return result
+end
+
 -- ============================================================================
 -- FFMPEG SUPPORT (FFI / Sync ShellExecuteEx Method)
 -- ============================================================================
@@ -4745,7 +4804,35 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
         end
     end
     
-    return false 
+    return false
+end
+
+-- Replay Buffer Pro writes its trimmed clip as "X_trimmed.ext" (suffix inserted
+-- before the LAST dot) and then deletes the original "X.ext" - mirror that rule
+local function make_trimmed_path(path)
+    local stem, ext = string.match(path, "^(.*)(%.[^./\\]+)$")
+    if not stem then return path .. "_trimmed" end
+    return stem .. "_trimmed" .. ext
+end
+
+-- "clip.mp4" -> "clip (2).mp4" when the target already exists.
+-- os_rename on Windows is MoveFileExW(REPLACE_EXISTING): without this check a
+-- name collision would silently OVERWRITE the existing file.
+local function uniquify_path(path)
+    local ok, result = pcall(function()
+        if not obs.os_file_exists(path) then return path end
+        local stem, ext = string.match(path, "^(.*)(%.[^./\\]+)$")
+        if not stem then stem, ext = path, "" end
+        for n = 2, 99 do
+            local candidate = stem .. " (" .. n .. ")" .. ext
+            if not obs.os_file_exists(candidate) then
+                log("Target exists, using collision-safe name: " .. candidate)
+                return candidate
+            end
+        end
+        return stem .. " (" .. os.time() .. ")" .. ext
+    end)
+    return ok and result or path
 end
 
 local function move_file(src, folder_name, game_name)
@@ -4791,6 +4878,7 @@ local function move_file(src, folder_name, game_name)
                 STATE.files_moved = STATE.files_moved + 1
                 return true
             end
+            target_path = uniquify_path(target_path)
             if obs.os_rename(src, target_path) then
                 log("Renamed (no-folder mode): " .. new_filename)
                 STATE.files_moved = STATE.files_moved + 1
@@ -4863,6 +4951,14 @@ local function move_file(src, folder_name, game_name)
                 return false
             end
             dbg("Date subfolder ready: " .. target_dir)
+        end
+
+        -- Collision-safe target name (avoid silent overwrite by MoveFileExW)
+        target_path = uniquify_path(target_path)
+        local still_valid = validate_path_length(target_path)
+        if not still_valid then
+            dbg("Collision-safe name exceeds MAX_PATH, keeping original target name")
+            target_path = target_dir .. "/" .. new_filename
         end
 
         -- FFMPEG THUMBNAIL LOGIC
@@ -4938,7 +5034,7 @@ end
 local function process_file(path)
     if not path or path == "" then
         log("ERROR: No file path provided")
-        return
+        return false
     end
 
     local raw_game, window_title, skip_fallback = detect_game()
@@ -4950,22 +5046,117 @@ local function process_file(path)
         log("No game detected, using: " .. folder_name)
     end
 
-    move_file(path, folder_name, folder_name)
+    return move_file(path, folder_name, folder_name)
 end
 
 local function process_file_with_game(path, folder_name, game_name)
     if not path or path == "" then
         log("ERROR: No file path provided")
-        return
+        return false
     end
 
     if not folder_name then
-        process_file(path)
-        return
+        return process_file(path)
     end
 
     log("Using cached game: " .. folder_name)
-    move_file(path, folder_name, game_name or folder_name)
+    return move_file(path, folder_name, game_name or folder_name)
+end
+
+-- ============================================================================
+-- DEFERRED MOVE QUEUE (v2.10.0)
+-- Replays are no longer moved synchronously inside the SAVED event. Each save
+-- is queued and flushed by this 1s timer once the file has settled. This lets
+-- Replay Buffer Pro finish its background trim (it writes "X_trimmed" next to
+-- "X", then deletes "X") before we organize the final file.
+-- ============================================================================
+
+local function process_move_queue()
+    local ok, err = pcall(function()
+        local q = STATE.pending_moves
+        local now = now_ms()
+
+        local function try_flush(job, candidate)
+            if process_file_with_game(candidate, job.folder_name, job.raw_game) then
+                STATE.last_flushed_path = job.path
+                STATE.last_flushed_time = os.time()
+                notify("Clip Saved", "Moved to: " .. job.folder_name)
+                return true
+            end
+            return false  -- locked or failed: retry on the next tick
+        end
+
+        for i = #q, 1, -1 do
+            local job = q[i]
+            local age = now - job.created_at
+            local grace = job.trimmed_path and 3000 or 1000
+            local done = false
+
+            if now > job.hard_deadline then
+                log("WARNING: Move job exceeded 30min hard cap, dropping (file kept): " .. job.path)
+                STATE.files_skipped = STATE.files_skipped + 1
+                done = true
+            elseif age >= grace then
+                local x_exists = obs.os_file_exists(job.path)
+                local t_exists = job.trimmed_path ~= nil and obs.os_file_exists(job.trimmed_path)
+
+                if x_exists and t_exists then
+                    -- RBP trim in progress (reads X, writes X_trimmed) - wait
+                    job.deadline = now + 120000
+                    job.stable_count = 0
+                elseif t_exists then
+                    -- Trim finished: X deleted, trimmed file is closed and final
+                    local candidate = job.trimmed_path
+                    if CONFIG.strip_trimmed_suffix and not obs.os_file_exists(job.path) then
+                        if obs.os_rename(job.trimmed_path, job.path) then
+                            candidate = job.path
+                            dbg("Stripped _trimmed suffix: " .. job.path)
+                        end
+                    end
+                    done = try_flush(job, candidate)
+                elseif x_exists then
+                    if not job.trimmed_path then
+                        -- Vanilla mode: file is final at SAVED, flush after grace
+                        done = try_flush(job, job.path)
+                    else
+                        -- RBP mode but no trim seen (Save Full Buffer / native
+                        -- hotkey): 2 stable size checks + no open handles first
+                        local size = get_file_size(job.path)
+                        if size > 0 and size == job.last_size then
+                            job.stable_count = job.stable_count + 1
+                        else
+                            job.stable_count = 0
+                        end
+                        job.last_size = size
+                        if job.stable_count >= 2 and is_file_unlocked(job.path) then
+                            done = try_flush(job, job.path)
+                        end
+                    end
+                else
+                    dbg("Queued replay no longer on disk (external consumer?): " .. job.path)
+                    STATE.files_skipped = STATE.files_skipped + 1
+                    done = true
+                end
+
+                if not done and now > job.deadline then
+                    log("ERROR: Could not organize replay within 120s, leaving in place: " .. job.path)
+                    notify("Move Failed", "File left in place")
+                    STATE.files_skipped = STATE.files_skipped + 1
+                    done = true  -- never delete, just stop tracking
+                end
+            end
+
+            if done then table.remove(q, i) end
+        end
+
+        if #q == 0 and STATE.move_timer_running then
+            obs.timer_remove(process_move_queue)
+            STATE.move_timer_running = false
+        end
+    end)
+    if not ok then
+        log("ERROR in move queue: " .. tostring(err))
+    end
 end
 
 -- ============================================================================
@@ -4978,59 +5169,64 @@ local split_files = {}
 local current_recording_file = nil
 
 local function on_recording_file_changed(calldata)
-    if not CONFIG.organize_recordings then
-        return
-    end
-
-    local next_file = obs.calldata_string(calldata, "next_file")
-
-    dbg("File split signal received, next_file: " .. tostring(next_file))
-
-    if STATE.recording_folder_name then
-        -- Safety net: if current_recording_file was never set (get_last_file + settings both failed),
-        -- try one last time from the recording output we already hold a reference to
-        if (not current_recording_file or current_recording_file == "") and STATE.recording_output_ref then
-            local settings = obs.obs_output_get_settings(STATE.recording_output_ref)
-            if settings then
-                local path = obs.obs_data_get_string(settings, "path")
-                if not path or path == "" then
-                    path = obs.obs_data_get_string(settings, "url")
-                end
-                if path and path ~= "" and path ~= next_file then
-                    current_recording_file = path
-                    dbg("Recovered previous file from output settings: " .. path)
-                end
-                obs.obs_data_release(settings)
-            end
+    local ok, err = pcall(function()
+        if not CONFIG.organize_recordings then
+            return
         end
 
-        -- The previous segment is in current_recording_file (set during init or previous split)
-        -- Move it to the game folder before updating to the new file
-        if current_recording_file and current_recording_file ~= "" then
-            -- Capture values for the closure (they may change by the time the timer fires)
-            local file_to_move = current_recording_file
-            local folder = STATE.recording_folder_name
-            local game = STATE.recording_game_name
+        local next_file = obs.calldata_string(calldata, "next_file")
 
-            -- Delay move by 300ms to ensure OBS has fully released the file handle
-            local function move_split_segment()
-                obs.timer_remove(move_split_segment)
-                if obs.os_file_exists(file_to_move) then
-                    log("Moving split segment: " .. file_to_move)
-                    process_file_with_game(file_to_move, folder, game)
-                else
-                    dbg("Split segment file not found (may have been moved by polling): " .. file_to_move)
+        dbg("File split signal received, next_file: " .. tostring(next_file))
+
+        if STATE.recording_folder_name then
+            -- Safety net: if current_recording_file was never set (get_last_file + settings both failed),
+            -- try one last time from the recording output we already hold a reference to
+            if (not current_recording_file or current_recording_file == "") and STATE.recording_output_ref then
+                local settings = obs.obs_output_get_settings(STATE.recording_output_ref)
+                if settings then
+                    local path = obs.obs_data_get_string(settings, "path")
+                    if not path or path == "" then
+                        path = obs.obs_data_get_string(settings, "url")
+                    end
+                    if path and path ~= "" and path ~= next_file then
+                        current_recording_file = path
+                        dbg("Recovered previous file from output settings: " .. path)
+                    end
+                    obs.obs_data_release(settings)
                 end
             end
-            obs.timer_add(move_split_segment, 300)
-        else
-            dbg("WARNING: Cannot move split segment - previous file path unknown")
+
+            -- The previous segment is in current_recording_file (set during init or previous split)
+            -- Move it to the game folder before updating to the new file
+            if current_recording_file and current_recording_file ~= "" then
+                -- Capture values for the closure (they may change by the time the timer fires)
+                local file_to_move = current_recording_file
+                local folder = STATE.recording_folder_name
+                local game = STATE.recording_game_name
+
+                -- Delay move by 300ms to ensure OBS has fully released the file handle
+                local function move_split_segment()
+                    obs.timer_remove(move_split_segment)
+                    if obs.os_file_exists(file_to_move) then
+                        log("Moving split segment: " .. file_to_move)
+                        process_file_with_game(file_to_move, folder, game)
+                    else
+                        dbg("Split segment file not found (may have been moved by polling): " .. file_to_move)
+                    end
+                end
+                obs.timer_add(move_split_segment, 300)
+            else
+                dbg("WARNING: Cannot move split segment - previous file path unknown")
+            end
+
+            -- Update tracking to the new file being written
+            current_recording_file = next_file
+
+            log("File split detected - using cached game: " .. STATE.recording_folder_name)
         end
-
-        -- Update tracking to the new file being written
-        current_recording_file = next_file
-
-        log("File split detected - using cached game: " .. STATE.recording_folder_name)
+    end)
+    if not ok then
+        log("ERROR in file_changed handler: " .. tostring(err))
     end
 end
 
@@ -5248,20 +5444,43 @@ local function on_event(event)
 
             local path = get_replay_path()
 
-            if diff < CONFIG.duplicate_cooldown then
-                log("Spam detected (" .. string.format("%.1f", diff) .. "s)")
-                if CONFIG.delete_spam_files and path then
-                    delete_file(path)
-                    log("Duplicate deleted")
+            if STATE.rbp_active then
+                -- RBP mode: dedupe by PATH, not by time. Rapid saves of different
+                -- durations are legit distinct clips; never delete anything here
+                -- (Replay Buffer Pro still owns the original file at this point).
+                if path then
+                    local dupe = (STATE.last_flushed_path == path
+                        and (now - STATE.last_flushed_time) < CONFIG.duplicate_cooldown)
+                    if not dupe then
+                        for _, job in ipairs(STATE.pending_moves) do
+                            if job.path == path then
+                                dupe = true
+                                break
+                            end
+                        end
+                    end
+                    if dupe then
+                        log("Duplicate SAVED event for same file - skipped: " .. path)
+                        STATE.files_skipped = STATE.files_skipped + 1
+                        return
+                    end
                 end
-                STATE.files_skipped = STATE.files_skipped + 1
-                return
+            else
+                if diff < CONFIG.duplicate_cooldown then
+                    log("Spam detected (" .. string.format("%.1f", diff) .. "s)")
+                    if CONFIG.delete_spam_files and path then
+                        delete_file(path)
+                        log("Duplicate deleted")
+                    end
+                    STATE.files_skipped = STATE.files_skipped + 1
+                    return
+                end
             end
 
             STATE.last_save_time = now
 
-            -- Capture file size BEFORE moving — needed for adaptive restart delay.
-            -- Must be done here because process_file_with_game() renames the file,
+            -- Capture file size BEFORE queueing — needed for adaptive restart delay.
+            -- Must be done here because the deferred move renames the file later,
             -- making the original path invalid for size checks.
             local saved_file_size = 0
             if path then
@@ -5273,11 +5492,27 @@ local function on_event(event)
                 local raw_game, window_title, skip_fallback = detect_game()
                 local folder_name = get_game_folder(raw_game, window_title, skip_fallback)
 
-                -- Use process_file_with_game to avoid calling detect_game() a second time
-                -- inside process_file() which would cause a race if the active window changed
-                process_file_with_game(path, folder_name, raw_game)
+                -- Deferred move: queue the file instead of moving it right now, so
+                -- Replay Buffer Pro (if present) can finish trimming first. Game is
+                -- detected HERE so the folder reflects the window at save time.
+                local t = now_ms()
+                table.insert(STATE.pending_moves, {
+                    path = path,
+                    trimmed_path = STATE.rbp_active and make_trimmed_path(path) or nil,
+                    folder_name = folder_name,
+                    raw_game = raw_game,
+                    created_at = t,
+                    deadline = t + 120000,
+                    hard_deadline = t + 1800000,
+                    last_size = -1,
+                    stable_count = 0,
+                })
+                if not STATE.move_timer_running then
+                    obs.timer_add(process_move_queue, 1000)
+                    STATE.move_timer_running = true
+                end
 
-                notify("Clip Saved", "Moved to: " .. folder_name)
+                notify("Clip Saved", "Organizing: " .. folder_name)
             end
 
             -- Auto-restart buffer logic (Prevent Overlap)
@@ -5708,10 +5943,36 @@ local function read_config(settings)
     CONFIG.auto_start_buffer = obs.obs_data_get_bool(settings, "auto_start_buffer")
     CONFIG.scan_all_processes = obs.obs_data_get_bool(settings, "scan_all_processes")
     CONFIG.notification_position = obs.obs_data_get_string(settings, "notification_position")
+    CONFIG.rbp_mode = obs.obs_data_get_string(settings, "rbp_mode")
+    if CONFIG.rbp_mode == "" then CONFIG.rbp_mode = "auto" end
+    CONFIG.strip_trimmed_suffix = obs.obs_data_get_bool(settings, "strip_trimmed_suffix")
 
     if CONFIG.fallback_folder == "" then
         CONFIG.fallback_folder = "Desktop"
     end
+end
+
+-- Replay Buffer Pro presence check - drives the deferred-queue behavior.
+-- "auto" asks OBS whether the plugin module is loaded; "on"/"off" force it.
+local function evaluate_rbp_mode()
+    local active = false
+    if CONFIG.rbp_mode == "on" then
+        active = true
+    elseif CONFIG.rbp_mode == "auto" then
+        local ok, mod = pcall(function()
+            if obs.obs_get_module then
+                return obs.obs_get_module("replay-buffer-pro")
+            end
+            return nil
+        end)
+        active = ok and mod ~= nil
+    end
+    if active ~= STATE.rbp_active then
+        log("Replay Buffer Pro integration: " .. (active and "ACTIVE" or "inactive") .. " (mode: " .. tostring(CONFIG.rbp_mode) .. ")")
+    else
+        dbg("Replay Buffer Pro integration: " .. (active and "ACTIVE" or "inactive") .. " (mode: " .. tostring(CONFIG.rbp_mode) .. ")")
+    end
+    STATE.rbp_active = active
 end
 
 -- Parse result of startup auto-update check
@@ -5909,6 +6170,26 @@ local function check_for_updates(props, p)
 	return true -- Force UI refresh to show the "Checking..." text on the button
 end
 
+-- Show/hide RBP-specific options depending on the selected mode (modified callback)
+local function on_rbp_mode_changed(props, property, settings)
+    pcall(function()
+        local visible = (obs.obs_data_get_string(settings, "rbp_mode") ~= "off")
+        local function set_vis(name)
+            local p = obs.obs_properties_get(props, name)
+            if not p then
+                -- obs_properties_get may not search inside groups on all versions
+                local grp = obs.obs_properties_get(props, "rbp_section")
+                local content = grp and obs.obs_property_group_content(grp)
+                p = content and obs.obs_properties_get(content, name)
+            end
+            if p then obs.obs_property_set_visible(p, visible) end
+        end
+        set_vis("strip_trimmed_suffix")
+        set_vis("rbp_help")
+    end)
+    return true -- refresh UI
+end
+
 function script_properties()
     local props = obs.obs_properties_create()
 
@@ -5952,6 +6233,20 @@ function script_properties()
     obs.obs_properties_add_bool(buffer_group, "auto_start_buffer", "▶️  Auto-start Replay Buffer on OBS launch")
     obs.obs_properties_add_text(buffer_group, "smart_save_help", "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "buffer_section", "🔄  BUFFER CONTROL", obs.OBS_GROUP_NORMAL, buffer_group)
+
+    -- REPLAY BUFFER PRO GROUP (dynamic: RBP options hide when Mode = Off)
+    local rbp_group = obs.obs_properties_create()
+    local rbp_mode_prop = obs.obs_properties_add_list(rbp_group, "rbp_mode", "🔌  Mode", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(rbp_mode_prop, "Auto-Detect", "auto")
+    obs.obs_property_list_add_string(rbp_mode_prop, "Always On", "on")
+    obs.obs_property_list_add_string(rbp_mode_prop, "Off", "off")
+    local rbp_strip_prop = obs.obs_properties_add_bool(rbp_group, "strip_trimmed_suffix", "✂️  Remove \"_trimmed\" suffix when organizing")
+    local rbp_help_prop = obs.obs_properties_add_text(rbp_group, "rbp_help", "Waits for Replay Buffer Pro to finish trimming, then organizes the final clip. Auto-Detect activates only when the plugin is installed.", obs.OBS_TEXT_INFO)
+    obs.obs_property_set_modified_callback(rbp_mode_prop, on_rbp_mode_changed)
+    local rbp_visible = (CONFIG.rbp_mode ~= "off")
+    obs.obs_property_set_visible(rbp_strip_prop, rbp_visible)
+    obs.obs_property_set_visible(rbp_help_prop, rbp_visible)
+    obs.obs_properties_add_group(props, "rbp_section", "🎬  REPLAY BUFFER PRO", obs.OBS_GROUP_NORMAL, rbp_group)
 
     -- ORGANIZATION GROUP
     local folder_group = obs.obs_properties_create()
@@ -6092,6 +6387,8 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "auto_start_buffer", false)
     obs.obs_data_set_default_bool(settings, "scan_all_processes", false)
     obs.obs_data_set_default_string(settings, "notification_position", "top_right")
+    obs.obs_data_set_default_string(settings, "rbp_mode", "auto")
+    obs.obs_data_set_default_bool(settings, "strip_trimmed_suffix", true)
 end
 
 function script_update(settings)
@@ -6104,6 +6401,7 @@ function script_update(settings)
     VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
 
     read_config(settings)
+    evaluate_rbp_mode()
     
     load_custom_names(settings)
 
@@ -6150,6 +6448,7 @@ function script_load(settings)
     destroy_orphaned_notifications()
 
     read_config(settings)
+    evaluate_rbp_mode()
 
     load_custom_names(settings)
 
@@ -6239,6 +6538,12 @@ function script_unload()
     obs.timer_remove(buffer_restart_safety_timeout) -- Cancel safety restart timeout
     obs.timer_remove(verify_buffer_started)         -- Cancel buffer verification retries
     obs.timer_remove(start_buffer_delayed)           -- Cancel pending buffer start
+    obs.timer_remove(process_move_queue)             -- Stop deferred move queue
+    if #STATE.pending_moves > 0 then
+        log("WARNING: " .. #STATE.pending_moves .. " pending replay move(s) dropped - files remain in the recordings folder")
+    end
+    STATE.pending_moves = {}
+    STATE.move_timer_running = false
     STATE.notification_timer_should_stop = true
     notification_queue = {}                        -- Discard any pending notifications
 
@@ -6259,7 +6564,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.9.4
+-- END OF SCRIPT v2.10.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
