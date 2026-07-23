@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.10.0
+-- Smart Replay Mover v2.11.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.10.0"
+local VERSION = "2.11.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,20 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.11.0:
+--   - NEW: Folder templates. The destination structure is now a template with
+--         tokens instead of a fixed <game> folder. Tokens: {game} {year} {month}
+--         {day} {date} {yearmonth} {hour} {min}. Examples: "{game}/Replays" or
+--         "{game}/{yearmonth}". Resolved relative to the OBS output folder; each
+--         segment is sanitized so a template can never escape it (no absolute
+--         paths, no ".." traversal). Default "{game}" reproduces prior behavior
+--   - CHANGE: The "monthly subfolders (YYYY-MM)" checkbox is replaced by the
+--         {yearmonth} token. Users who had it enabled see a one-time "Migrate" button
+--         that folds it into their template as "{game}/{yearmonth}" and then hides
+--         itself for good. Nothing changes silently and existing layouts are preserved
+--   - Simplified directory creation to a single recursive mkdir (handles arbitrary
+--         template depth)
+
 -- CHANGELOG v2.10.0:
 --   - NEW: Replay Buffer Pro compatibility (github.com/JoshuaPotter/replay-buffer-pro).
 --         Replays now go through a deferred move queue: the script waits for RBP's
@@ -255,7 +269,8 @@ local CONFIG = {
     add_game_prefix = true,
     organize_screenshots = true,
     organize_recordings = true,
-    use_date_subfolders = false,
+    use_date_subfolders = false,  -- legacy; migrated into folder_template via UI button
+    folder_template = "{game}",
     fallback_folder = "Desktop",
     duplicate_cooldown = 5.0,
     delete_spam_files = true,
@@ -4003,6 +4018,42 @@ local function clean_folder_path(str)
     return str
 end
 
+-- Substitute {token} placeholders in a folder template (case-insensitive token
+-- names). Date pieces are resolved at move time. Unknown tokens are left literal
+-- so typos are visible instead of silently dropped.
+local function apply_folder_template(template, game)
+    local repl = {
+        game = game or "",
+        year = os.date("%Y"),
+        month = os.date("%m"),
+        day = os.date("%d"),
+        date = os.date("%Y-%m-%d"),
+        yearmonth = os.date("%Y-%m"),  -- matches old monthly-subfolder format
+        hour = os.date("%H"),
+        min = os.date("%M"),
+    }
+    return (string.gsub(template, "{(%w+)}", function(k)
+        local v = repl[string.lower(k)]
+        return v ~= nil and v or ("{" .. k .. "}")
+    end))
+end
+
+-- Force a RELATIVE, safe path: clean each segment, drop empties/".", and strip any
+-- leading/trailing separators or drive letters. Prevents absolute paths and ".."
+-- traversal so output can never escape the OBS output directory.
+local function sanitize_relative_path(str)
+    str = clean_folder_path(str)  -- strips <>:"|?* and .. , normalizes \ -> /
+    local segments = {}
+    for seg in string.gmatch(str, "[^/]+") do
+        seg = string.gsub(seg, "^%s+", "")
+        seg = string.gsub(seg, "%s+$", "")
+        if seg ~= "" and seg ~= "." then
+            table.insert(segments, seg)
+        end
+    end
+    return table.concat(segments, "/")
+end
+
 -- Recursive directory creation (Linux-safe: preserves leading "/" for absolute paths)
 local function recursive_mkdir(path)
     path = string.gsub(path, "\\", "/")
@@ -4897,8 +4948,19 @@ local function move_file(src, folder_name, game_name)
             real_folder = get_existing_folder(dir, safe_folder)
         end
         
-        local target_dir = dir .. "/" .. real_folder
+        -- Resolve the folder template into a relative structure, injecting the
+        -- resolved game folder as {game}. Sanitized to stay relative to the OBS
+        -- output dir. Defaults to "{game}" (unchanged behavior).
+        local template = (CONFIG.folder_template and CONFIG.folder_template ~= "")
+                         and CONFIG.folder_template or "{game}"
+        local rel = sanitize_relative_path(apply_folder_template(template, real_folder))
+        if rel == "" then rel = real_folder end  -- safety net if template resolves empty
 
+        local target_dir = dir .. "/" .. rel
+
+        -- Legacy monthly-subfolder support: applies only until the user migrates it
+        -- into the template (see the Migrate button in ORGANIZATION). After migration
+        -- this flag is false and the date comes from the {yearmonth} token instead.
         if CONFIG.use_date_subfolders then
             target_dir = target_dir .. "/" .. os.date("%Y-%m")
         end
@@ -4938,20 +5000,13 @@ local function move_file(src, folder_name, game_name)
             dbg("Truncated filename to: " .. new_filename)
         end
 
-        local base_folder = dir .. "/" .. real_folder
-        if not safe_mkdir(base_folder) then
-            log("ERROR: Failed to create folder: " .. base_folder)
+        -- Create the full target directory. safe_mkdir -> recursive_mkdir builds all
+        -- parent folders, so this covers arbitrary template depth (+ date subfolder).
+        if not safe_mkdir(target_dir) then
+            log("ERROR: Failed to create folder: " .. target_dir)
             return false
         end
-        dbg("Folder ready: " .. base_folder)
-
-        if CONFIG.use_date_subfolders then
-            if not safe_mkdir(target_dir) then
-                log("ERROR: Failed to create date subfolder: " .. target_dir)
-                return false
-            end
-            dbg("Date subfolder ready: " .. target_dir)
-        end
+        dbg("Folder ready: " .. target_dir)
 
         -- Collision-safe target name (avoid silent overwrite by MoveFileExW)
         target_path = uniquify_path(target_path)
@@ -5927,6 +5982,7 @@ local function read_config(settings)
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
     CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
+    CONFIG.folder_template = obs.obs_data_get_string(settings, "folder_template")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
     CONFIG.delete_spam_files = obs.obs_data_get_bool(settings, "delete_spam_files")
@@ -6190,6 +6246,52 @@ local function on_rbp_mode_changed(props, property, settings)
     return true -- refresh UI
 end
 
+-- ============================================================================
+-- Legacy monthly-subfolder migration (explicit, user-triggered)
+-- Older versions organized as <game>/[YYYY-MM] via the "monthly subfolders"
+-- checkbox (use_date_subfolders). Instead of migrating silently, we show a
+-- checkbox + button ONLY while that legacy flag is set. Clicking the button
+-- folds the effect into the folder template as {yearmonth} and clears the flag,
+-- after which the checkbox and button never appear again.
+-- ============================================================================
+local function migrate_legacy_date_setting(settings)
+    if not obs.obs_data_get_bool(settings, "use_date_subfolders") then
+        return false
+    end
+    local tmpl = obs.obs_data_get_string(settings, "folder_template")
+    if not tmpl or tmpl == "" then tmpl = "{game}" end
+    if not string.find(string.lower(tmpl), "{yearmonth}", 1, true) then
+        tmpl = tmpl .. "/{yearmonth}"
+        obs.obs_data_set_string(settings, "folder_template", tmpl)
+    end
+    obs.obs_data_set_bool(settings, "use_date_subfolders", false)
+    log("Migrated legacy monthly-subfolder setting into folder template: " .. tmpl)
+    return true
+end
+
+local function on_migrate_template_clicked(props, property)
+    local settings = STATE.script_settings
+    if not settings then return false end
+    if not migrate_legacy_date_setting(settings) then return false end
+    read_config(settings)  -- refresh CONFIG (updated template + cleared flag)
+
+    -- Hide the now-obsolete controls. obs_properties_get may not descend into
+    -- groups on all OBS versions, so fall back to the group's content.
+    local function hide(name)
+        local p = obs.obs_properties_get(props, name)
+        if not p then
+            local grp = obs.obs_properties_get(props, "folder_section")
+            local content = grp and obs.obs_property_group_content(grp)
+            p = content and obs.obs_properties_get(content, name)
+        end
+        if p then obs.obs_property_set_visible(p, false) end
+    end
+    hide("use_date_subfolders")
+    hide("migrate_info")
+    hide("migrate_template_btn")
+    return true  -- refresh UI (also updates the template textbox to show {yearmonth})
+end
+
 function script_properties()
     local props = obs.obs_properties_create()
 
@@ -6250,7 +6352,31 @@ function script_properties()
 
     -- ORGANIZATION GROUP
     local folder_group = obs.obs_properties_create()
-    obs.obs_properties_add_bool(folder_group, "use_date_subfolders", "📅  Create monthly subfolders (YYYY-MM)")
+    obs.obs_properties_add_text(folder_group, "folder_template", "🧩  Folder template", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(folder_group, "folder_template_help",
+[[Builds subfolders under the OBS output folder.
+
+Tokens:
+   {game} — detected game folder
+   {year} {month} {day} — 2026 / 07 / 23
+   {date} — 2026-07-23
+   {yearmonth} — 2026-07  (old monthly folders)
+   {hour} {min} — clock time
+
+Examples:   {game}/Replays      {game}/{yearmonth}]],
+        obs.OBS_TEXT_INFO)
+    -- Legacy monthly-subfolder controls: only shown while the old flag is still set.
+    -- The Migrate button folds it into the template; both then disappear for good.
+    if CONFIG.use_date_subfolders then
+        obs.obs_properties_add_bool(folder_group, "use_date_subfolders", "📅  Monthly subfolders (legacy)")
+        obs.obs_properties_add_text(folder_group, "migrate_info",
+[[Legacy "monthly subfolders" is still on.
+Click Migrate to fold it into the template as {yearmonth}.
+One-time — this checkbox and button then disappear.]],
+            obs.OBS_TEXT_INFO)
+        obs.obs_properties_add_button(folder_group, "migrate_template_btn",
+            "⬆️  Migrate monthly-subfolders into template", on_migrate_template_clicked)
+    end
     obs.obs_properties_add_bool(folder_group, "organize_screenshots", "📸  Also organize screenshots")
     obs.obs_properties_add_bool(folder_group, "organize_recordings", "🎬  Organize recordings (Start/Stop Recording)")
     obs.obs_properties_add_bool(folder_group, "scan_all_processes", "🔍  Detect game by scanning all running processes")
@@ -6371,6 +6497,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
     obs.obs_data_set_default_bool(settings, "organize_recordings", true)
     obs.obs_data_set_default_bool(settings, "use_date_subfolders", false)
+    obs.obs_data_set_default_string(settings, "folder_template", "{game}")
     obs.obs_data_set_default_string(settings, "fallback_folder", "Desktop")
     obs.obs_data_set_default_double(settings, "duplicate_cooldown", 5.0)
     obs.obs_data_set_default_bool(settings, "delete_spam_files", true)

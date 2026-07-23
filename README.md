@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.10.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.11.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -74,7 +74,7 @@
 
 - **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
 - **Case-Insensitive** — Won't create duplicate folders with different cases
-- **Date Subfolders** — Optional monthly organization (2025-06/)
+- **🧩 Folder Templates** — Shape the destination with tokens like `{game}`, `{yearmonth}` and `{date}` (e.g. `{game}/Replays` or `{game}/{yearmonth}`)
 - **230+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
 - **⚡ Smart Save Hotkey** — Instant "Saving..." notification when pressing your custom hotkey
 - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root
@@ -207,10 +207,24 @@
 
   | Setting | Description |
   |---------|-------------|
-  | Monthly subfolders | Creates `YYYY-MM` subfolders |
+  | Folder template | Destination structure built from tokens, relative to the OBS output folder (default `{game}`) |
   | Organize screenshots | Also sort screenshots |
   | Organize recordings | Sort regular recordings (not just replays) |
   | Scan all processes | Detect background games when alt-tabbed (Windows only) |
+
+  **Folder template tokens**
+
+  | Token | Expands to |
+  |-------|------------|
+  | `{game}` | Detected game folder (e.g. `Counter-Strike 2`) |
+  | `{year}` `{month}` `{day}` | `2026` / `07` / `23` |
+  | `{date}` | `2026-07-23` |
+  | `{yearmonth}` | `2026-07` — same as the old monthly subfolders |
+  | `{hour}` `{min}` | Clock time |
+
+  Examples: `{game}/Replays` → `Counter-Strike 2/Replays/` · `{game}/{yearmonth}` → `Counter-Strike 2/2026-07/`. Paths are always relative to the OBS output folder — templates can't escape it.
+
+  > 🔄 **Upgrading from monthly subfolders?** If you had that option enabled, the settings show a one-time **Migrate** button that folds it into your template as `{game}/{yearmonth}`, then disappears. Your existing layout is preserved.
 
 ### 🛡️ Spam Protection
 
@@ -369,7 +383,7 @@
   │   └── Space Marine 2 - 2025-06-17 18-45-00.mp4
   │
   ├── 📁 Minecraft/
-  │   └── 2025-06/                    ← Optional date subfolder
+  │   └── 2025-06/                    ← from a "{game}/{yearmonth}" template
   │       └── Minecraft - 2025-06-18 11-22-33.mp4
   │
   └── 📁 Desktop/                     ← Fallback folder
@@ -488,6 +502,12 @@
   ---
 
 ## 📋 Changelog
+
+### v2.11.0 — 🧩 Folder Templates
+
+- **🧩 Folder Templates** — The destination structure is now a template with tokens instead of a fixed `{game}` folder. Tokens: `{game}`, `{year}`, `{month}`, `{day}`, `{date}`, `{yearmonth}`, `{hour}`, `{min}`. Examples: `{game}/Replays`, `{game}/{yearmonth}`. Resolved relative to the OBS output folder, with every path segment sanitized so a template can never escape it (no absolute paths, no `..` traversal). The default `{game}` reproduces the previous behavior exactly.
+- **🔄 Monthly-Subfolder Migration** — The old "monthly subfolders (YYYY-MM)" checkbox is replaced by the `{yearmonth}` token. If you had it enabled, a one-time **Migrate** button folds it into your template as `{game}/{yearmonth}` and then hides itself — nothing changes silently, and existing folder layouts are preserved.
+- **🧹 Simpler Directory Creation** — Folder creation is now a single recursive `mkdir` that handles arbitrary template depth.
 
 ### v2.10.0 — 🔌 Replay Buffer Pro Compatibility
 
