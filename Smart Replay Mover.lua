@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.10.0
+-- Smart Replay Mover v2.11.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.10.0"
+local VERSION = "2.11.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,23 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.11.0:
+--   - NEW: Filename prefix now matches the destination folder name (custom mappings
+--         and database names included) instead of the raw process name — e.g.
+--         "Aliens vs Predator - Replay.mp4" instead of "avp - Replay.mp4"
+--   - NEW: "Scan all running processes" now also matches custom name mappings and
+--         alias names, not just the built-in database (Issue #28)
+--   - NEW: Arena Breakout Infinite (UAGame.exe) and Chivalry 2 added to the database;
+--         Arena Breakout launcher added to the ignore list
+--   - Log wording: "Using cached game:" -> "Game folder:" (replay detection is fresh
+--         on every save; the old text wrongly suggested a stale cache)
+--   - NEW: Folder templates. The destination folder is now a template of {tokens}
+--         instead of a fixed <game> layout: {game} {year} {month} {day} {date}
+--         {yearmonth} {hour} {min}. Default "{game}" keeps prior behavior; each
+--         segment is sanitized so a template can never escape the OBS output folder
+--   - CHANGE: the "monthly subfolders" checkbox is replaced by the {yearmonth} token;
+--         users who had it enabled get a one-time "Migrate" button that folds it in
+
 -- CHANGELOG v2.10.0:
 --   - NEW: Replay Buffer Pro compatibility (github.com/JoshuaPotter/replay-buffer-pro).
 --         Replays now go through a deferred move queue: the script waits for RBP's
@@ -255,7 +272,8 @@ local CONFIG = {
     add_game_prefix = true,
     organize_screenshots = true,
     organize_recordings = true,
-    use_date_subfolders = false,
+    use_date_subfolders = false,  -- legacy; replaced by folder_template
+    folder_template = "{game}",
     fallback_folder = "Desktop",
     duplicate_cooldown = 5.0,
     delete_spam_files = true,
@@ -542,6 +560,7 @@ local GAME_DATABASE = {
     ["celebritypoker"] = "Poker Night at the Inventory",
     ["celeste"] = "Celeste",
     ["childoflight"] = "Child of Light",
+    ["chivalry2-win64-shipping"] = "Chivalry 2",
     ["chronicle"] = "Chronicle - Runescape Legends",
     ["cities"] = "Cities: Skylines",
     ["citra-qt"] = "Citra",
@@ -2044,6 +2063,7 @@ local GAME_DATABASE = {
     ["twinsector_steam"] = "Twin Sector",
     ["twwse"] = "The Whispered World Special Edition",
     ["tyranny"] = "Tyranny",
+    ["uagame"] = "Arena Breakout Infinite",
     ["udk"] = "Unreal Development Kit",
     ["udkgame"] = "Unmechanical",
     ["ue4-win64-shipping"] = "Unreal Tournament 4",
@@ -2539,6 +2559,9 @@ local IGNORE_LIST = {
 
     -- Amazon Games
     "amazongames", "primegaming", "amazongameslauncher",
+
+    -- Level Infinite / Tencent
+    "arenabreakoutlauncher",
 
     -- ═══════════════════════════════════════════════════════════════
     -- GAME LAUNCHERS - INDIE / OTHER (v2.7.0 New)
@@ -4003,6 +4026,32 @@ local function clean_folder_path(str)
     return str
 end
 
+-- Expand {token} placeholders (case-insensitive).
+local function apply_folder_template(template, game)
+    local t = {
+        game = game or "",
+        year = os.date("%Y"), month = os.date("%m"), day = os.date("%d"),
+        date = os.date("%Y-%m-%d"), yearmonth = os.date("%Y-%m"),
+        hour = os.date("%H"), min = os.date("%M"),
+    }
+    return (template:gsub("{(%w+)}", function(k)
+        local v = t[k:lower()]
+        return v ~= nil and v or ("{" .. k .. "}")
+    end))
+end
+
+-- Force a template to a relative path that stays inside the output folder.
+local function sanitize_relative_path(str)
+    local segments = {}
+    for seg in clean_folder_path(str):gmatch("[^/]+") do
+        seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
+        if seg ~= "" and seg ~= "." and seg ~= ".." then
+            segments[#segments + 1] = seg
+        end
+    end
+    return table.concat(segments, "/")
+end
+
 -- Recursive directory creation (Linux-safe: preserves leading "/" for absolute paths)
 local function recursive_mkdir(path)
     path = string.gsub(path, "\\", "/")
@@ -4458,7 +4507,9 @@ local function get_background_game()
             local exe_file = ffi.string(pe32.szExeFile)
             local name = string.gsub(exe_file, "%.[eE][xX][eE]$", ""):lower()
             
-            if not is_ignored(name) and GAME_DATABASE and GAME_DATABASE[name] then
+            if not is_ignored(name) and ((CUSTOM_NAMES_EXACT and CUSTOM_NAMES_EXACT[name])
+                or (GAME_NAMES and GAME_NAMES[name])
+                or (GAME_DATABASE and GAME_DATABASE[name])) then
                 dbg("Background game found via process snapshot: " .. name)
                 kernel32.CloseHandle(snapshot)
                 return name
@@ -4897,8 +4948,14 @@ local function move_file(src, folder_name, game_name)
             real_folder = get_existing_folder(dir, safe_folder)
         end
         
-        local target_dir = dir .. "/" .. real_folder
+        -- Build the destination from the folder template; {game} is the detected folder.
+        local template = (CONFIG.folder_template ~= nil and CONFIG.folder_template ~= "")
+                         and CONFIG.folder_template or "{game}"
+        local rel = sanitize_relative_path(apply_folder_template(template, real_folder))
+        if rel == "" then rel = real_folder end
+        local target_dir = dir .. "/" .. rel
 
+        -- Legacy monthly subfolders (until the user migrates to {yearmonth}).
         if CONFIG.use_date_subfolders then
             target_dir = target_dir .. "/" .. os.date("%Y-%m")
         end
@@ -4912,10 +4969,11 @@ local function move_file(src, folder_name, game_name)
               ", will_add=" .. tostring(should_add_prefix))
 
         if should_add_prefix then
+            -- Prefix mirrors the actual destination folder (custom/DB name), not the raw process name
             -- For nested paths (e.g., "Singleplayer/DS3"), use only the last segment as prefix
-            local prefix_source = game_name
-            if string.find(game_name, "[/\\]") then
-                prefix_source = string.match(game_name, "([^/\\]+)$") or game_name
+            local prefix_source = real_folder
+            if string.find(prefix_source, "[/\\]") then
+                prefix_source = string.match(prefix_source, "([^/\\]+)$") or prefix_source
                 dbg("Nested path detected, using last segment for prefix: " .. prefix_source)
             end
             local safe_game = clean_filename(prefix_source)
@@ -4938,20 +4996,12 @@ local function move_file(src, folder_name, game_name)
             dbg("Truncated filename to: " .. new_filename)
         end
 
-        local base_folder = dir .. "/" .. real_folder
-        if not safe_mkdir(base_folder) then
-            log("ERROR: Failed to create folder: " .. base_folder)
+        -- One recursive mkdir creates every level of the template path.
+        if not safe_mkdir(target_dir) then
+            log("ERROR: Failed to create folder: " .. target_dir)
             return false
         end
-        dbg("Folder ready: " .. base_folder)
-
-        if CONFIG.use_date_subfolders then
-            if not safe_mkdir(target_dir) then
-                log("ERROR: Failed to create date subfolder: " .. target_dir)
-                return false
-            end
-            dbg("Date subfolder ready: " .. target_dir)
-        end
+        dbg("Folder ready: " .. target_dir)
 
         -- Collision-safe target name (avoid silent overwrite by MoveFileExW)
         target_path = uniquify_path(target_path)
@@ -5059,7 +5109,7 @@ local function process_file_with_game(path, folder_name, game_name)
         return process_file(path)
     end
 
-    log("Using cached game: " .. folder_name)
+    log("Game folder: " .. folder_name)
     return move_file(path, folder_name, game_name or folder_name)
 end
 
@@ -5927,6 +5977,7 @@ local function read_config(settings)
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
     CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
+    CONFIG.folder_template = obs.obs_data_get_string(settings, "folder_template")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
     CONFIG.delete_spam_files = obs.obs_data_get_bool(settings, "delete_spam_files")
@@ -6190,6 +6241,41 @@ local function on_rbp_mode_changed(props, property, settings)
     return true -- refresh UI
 end
 
+-- Fold the legacy use_date_subfolders flag into the template as {yearmonth}.
+local function migrate_legacy_date_setting(settings)
+    if not obs.obs_data_get_bool(settings, "use_date_subfolders") then return false end
+    local tmpl = obs.obs_data_get_string(settings, "folder_template")
+    if not tmpl or tmpl == "" then tmpl = "{game}" end
+    if not tmpl:lower():find("{yearmonth}", 1, true) then
+        tmpl = tmpl .. "/{yearmonth}"
+        obs.obs_data_set_string(settings, "folder_template", tmpl)
+    end
+    obs.obs_data_set_bool(settings, "use_date_subfolders", false)
+    log("Migrated legacy monthly subfolders into folder template: " .. tmpl)
+    return true
+end
+
+local function on_migrate_template_clicked(props, property)
+    local settings = STATE.script_settings
+    if not settings or not migrate_legacy_date_setting(settings) then return false end
+    read_config(settings)
+
+    -- obs_properties_get may not search inside groups on all versions.
+    local function hide(name)
+        local p = obs.obs_properties_get(props, name)
+        if not p then
+            local grp = obs.obs_properties_get(props, "template_section")
+            local content = grp and obs.obs_property_group_content(grp)
+            p = content and obs.obs_properties_get(content, name)
+        end
+        if p then obs.obs_property_set_visible(p, false) end
+    end
+    hide("use_date_subfolders")
+    hide("migrate_info")
+    hide("migrate_template_btn")
+    return true
+end
+
 function script_properties()
     local props = obs.obs_properties_create()
 
@@ -6248,9 +6334,25 @@ function script_properties()
     obs.obs_property_set_visible(rbp_help_prop, rbp_visible)
     obs.obs_properties_add_group(props, "rbp_section", "🎬  REPLAY BUFFER PRO", obs.OBS_GROUP_NORMAL, rbp_group)
 
+    -- FOLDER TEMPLATES GROUP
+    local template_group = obs.obs_properties_create()
+    obs.obs_properties_add_text(template_group, "folder_template", "🧩  Folder template", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(template_group, "folder_template_help",
+        "Tokens: {game} {year} {month} {day} {date} {yearmonth} {hour} {min}. Combine them with any separator; / makes a subfolder. E.g. {game}/{hour} - {min}. See README.",
+        obs.OBS_TEXT_INFO)
+    -- Show the legacy controls only while the old flag is set.
+    if CONFIG.use_date_subfolders then
+        obs.obs_properties_add_bool(template_group, "use_date_subfolders", "📅  Monthly subfolders (legacy)")
+        obs.obs_properties_add_text(template_group, "migrate_info",
+            "Legacy monthly subfolders is on. Migrate folds it into the template as {yearmonth} (one-time).",
+            obs.OBS_TEXT_INFO)
+        obs.obs_properties_add_button(template_group, "migrate_template_btn",
+            "⬆️  Migrate monthly subfolders into template", on_migrate_template_clicked)
+    end
+    obs.obs_properties_add_group(props, "template_section", "🧩  FOLDER TEMPLATES", obs.OBS_GROUP_NORMAL, template_group)
+
     -- ORGANIZATION GROUP
     local folder_group = obs.obs_properties_create()
-    obs.obs_properties_add_bool(folder_group, "use_date_subfolders", "📅  Create monthly subfolders (YYYY-MM)")
     obs.obs_properties_add_bool(folder_group, "organize_screenshots", "📸  Also organize screenshots")
     obs.obs_properties_add_bool(folder_group, "organize_recordings", "🎬  Organize recordings (Start/Stop Recording)")
     obs.obs_properties_add_bool(folder_group, "scan_all_processes", "🔍  Detect game by scanning all running processes")
@@ -6371,6 +6473,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
     obs.obs_data_set_default_bool(settings, "organize_recordings", true)
     obs.obs_data_set_default_bool(settings, "use_date_subfolders", false)
+    obs.obs_data_set_default_string(settings, "folder_template", "{game}")
     obs.obs_data_set_default_string(settings, "fallback_folder", "Desktop")
     obs.obs_data_set_default_double(settings, "duplicate_cooldown", 5.0)
     obs.obs_data_set_default_bool(settings, "delete_spam_files", true)
@@ -6564,7 +6667,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.10.0
+-- END OF SCRIPT v2.11.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
