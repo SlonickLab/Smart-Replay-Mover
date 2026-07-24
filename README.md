@@ -74,7 +74,7 @@
 
 - **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
 - **Case-Insensitive** — Won't create duplicate folders with different cases
-- **🧩 Folder Templates** — Shape the destination with tokens like `{game}`, `{yearmonth}` and `{date}` (e.g. `{game}/Replays` or `{game}/{yearmonth}`)
+- **🧩 Folder Templates** — Organize into any structure with `{game}`, `{yearmonth}`, `{date}` and more tokens
 - **230+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
 - **⚡ Smart Save Hotkey** — Instant "Saving..." notification when pressing your custom hotkey
 - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root
@@ -203,28 +203,41 @@
   | Mode | Auto-Detect (default — activates only when the plugin is installed), Always On, or Off |
   | Remove "_trimmed" suffix | Renames Replay Buffer Pro's trimmed clip back to a clean name while organizing (on by default) |
 
-### 🗂️ Organization
+### 🧩 Folder Templates
 
-  | Setting | Description |
-  |---------|-------------|
-  | Folder template | Destination structure built from tokens, relative to the OBS output folder (default `{game}`) |
-  | Organize screenshots | Also sort screenshots |
-  | Organize recordings | Sort regular recordings (not just replays) |
-  | Scan all processes | Detect background games when alt-tabbed (Windows only) |
-
-  **Folder template tokens**
+  The destination folder is a **template** of `{tokens}`, resolved when each clip is saved. The default `{game}` reproduces the classic per-game layout.
 
   | Token | Expands to |
   |-------|------------|
   | `{game}` | Detected game folder (e.g. `Counter-Strike 2`) |
   | `{year}` `{month}` `{day}` | `2026` / `07` / `23` |
   | `{date}` | `2026-07-23` |
-  | `{yearmonth}` | `2026-07` — same as the old monthly subfolders |
+  | `{yearmonth}` | `2026-07` (the old monthly-subfolder format) |
   | `{hour}` `{min}` | Clock time |
 
-  Examples: `{game}/Replays` → `Counter-Strike 2/Replays/` · `{game}/{yearmonth}` → `Counter-Strike 2/2026-07/`. Paths are always relative to the OBS output folder — templates can't escape it.
+  **Examples**
 
-  > 🔄 **Upgrading from monthly subfolders?** If you had that option enabled, the settings show a one-time **Migrate** button that folds it into your template as `{game}/{yearmonth}`, then disappears. Your existing layout is preserved.
+  | Template | Result |
+  |----------|--------|
+  | `{game}` | `Counter-Strike 2/` |
+  | `{game}/Replays` | `Counter-Strike 2/Replays/` |
+  | `{game}/{yearmonth}` | `Counter-Strike 2/2026-07/` |
+  | `{yearmonth}/{game}` | `2026-07/Counter-Strike 2/` |
+  | `{game}/{year} - {hour} - {min}` | `Counter-Strike 2/2026 - 18 - 53/` |
+
+  Combine tokens in one folder with any separator you like. Only `/` starts a new subfolder, so `{hour} - {min}` becomes `18 - 53` and `{game}/{year} - {hour} - {min}` becomes `Counter-Strike 2/2026 - 18 - 53/`.
+
+  The template is always resolved **relative to the OBS output folder** — every segment is sanitized, so an absolute path, a drive letter, or `..` can never send a clip outside it. Unknown tokens are left as-is, so a typo is visible instead of silently dropped.
+
+  > 💡 Upgrading from the old **Monthly subfolders** checkbox? A one-time **Migrate** button appears here and folds it into your template as `{game}/{yearmonth}` — your existing layout is preserved.
+
+### 🗂️ Organization
+
+  | Setting | Description |
+  |---------|-------------|
+  | Organize screenshots | Also sort screenshots |
+  | Organize recordings | Sort regular recordings (not just replays) |
+  | Scan all processes | Detect background games when alt-tabbed (Windows only) |
 
 ### 🛡️ Spam Protection
 
@@ -383,7 +396,7 @@
   │   └── Space Marine 2 - 2025-06-17 18-45-00.mp4
   │
   ├── 📁 Minecraft/
-  │   └── 2025-06/                    ← from a "{game}/{yearmonth}" template
+  │   └── 2025-06/                    ← From a {yearmonth} template
   │       └── Minecraft - 2025-06-18 11-22-33.mp4
   │
   └── 📁 Desktop/                     ← Fallback folder
@@ -503,11 +516,14 @@
 
 ## 📋 Changelog
 
-### v2.11.0 — 🧩 Folder Templates
+### v2.11.0 — 🧩 Folder Templates & 🏷️ Prefix = Folder Name
 
-- **🧩 Folder Templates** — The destination structure is now a template with tokens instead of a fixed `{game}` folder. Tokens: `{game}`, `{year}`, `{month}`, `{day}`, `{date}`, `{yearmonth}`, `{hour}`, `{min}`. Examples: `{game}/Replays`, `{game}/{yearmonth}`. Resolved relative to the OBS output folder, with every path segment sanitized so a template can never escape it (no absolute paths, no `..` traversal). The default `{game}` reproduces the previous behavior exactly.
-- **🔄 Monthly-Subfolder Migration** — The old "monthly subfolders (YYYY-MM)" checkbox is replaced by the `{yearmonth}` token. If you had it enabled, a one-time **Migrate** button folds it into your template as `{game}/{yearmonth}` and then hides itself — nothing changes silently, and existing folder layouts are preserved.
-- **🧹 Simpler Directory Creation** — Folder creation is now a single recursive `mkdir` that handles arbitrary template depth.
+- **🧩 Folder Templates** — The destination folder is now a **template** of `{tokens}` (`{game}`, `{year}`, `{month}`, `{day}`, `{date}`, `{yearmonth}`, `{hour}`, `{min}`) instead of a fixed `<game>` layout. The default `{game}` keeps the classic behavior; every path segment is sanitized so a template can never escape the OBS output folder. See [Folder Templates](#-folder-templates).
+- **📅 Monthly Subfolders → `{yearmonth}`** — The old *Monthly subfolders* checkbox is replaced by the `{yearmonth}` token. If you had it enabled, a one-time **Migrate** button folds it into your template as `{game}/{yearmonth}` and then disappears — existing layouts are preserved.
+- **🏷️ Prefix = Folder Name** — The game-name prefix added to filenames now matches the destination folder (custom mappings and database names included) instead of the raw process name. With a mapping `shadps4.exe > Bloodborne` you now get `Bloodborne - Replay.mp4`, and database games get their pretty name too (`Aliens vs Predator - Replay.mp4` instead of `avp - Replay.mp4`). No-folder mode (`/`) keeps its old behavior.
+- **🔍 Custom Mappings in Background Scan** — The **Scan all running processes** option now also matches your custom name mappings and internal alias names. Previously it only consulted the built-in database, so tabbed-out saves could land in the fallback folder even with a correct mapping ([Issue #28](https://github.com/SlonickLab/Smart-Replay-Mover/issues/28))
+- **🎮 Database +2** — Added **Arena Breakout: Infinite** (`UAGame.exe`) and **Chivalry 2** (`Chivalry2-Win64-Shipping.exe`); the Arena Breakout launcher joined the ignore list ([Issue #28](https://github.com/SlonickLab/Smart-Replay-Mover/issues/28))
+- **📖 Log Clarity** — The `Using cached game:` log line is now `Game folder:` — replay detection runs fresh on every save, and the old wording wrongly suggested a stale cache
 
 ### v2.10.0 — 🔌 Replay Buffer Pro Compatibility
 
@@ -557,6 +573,9 @@
 - **🖥️ Adaptive UI** — Windows-only settings (Scan Processes, Scale, Position, Update Checker) auto-hide on Linux.
 - **🎬 FFmpeg Thumbnails on Linux** — Proper shell quoting, path validation, and error logging for cross-platform FFmpeg support.
 
+<details>
+<summary>View older versions</summary>
+
 ### v2.8.2
 
 - **🔍 Background Game Detection** — Added an option to scan all running processes for a game if the active window isn't one. This serves as a smart fallback if you alt-tabbed to Discord or the desktop before saving a clip! (Feature request: @EndCod3r)
@@ -569,9 +588,6 @@
 - **🧵 Thread-Safe Notifications** — All notification calls now go through a safe queue processed exclusively on one thread, eliminating cross-thread Win32 GDI deadlocks
 - **⚡ Smart Skip** — On fast systems (NVMe/SSD), the intermediate "Saving..." is automatically skipped in favor of "Clip Saved" when save completes instantly
 - **🐛 Detection Fix** — Fixed double `detect_game()` call during replay buffer save that could cause wrong folder assignment
-
-<details>
-<summary>View older versions</summary>
 
 ### v2.8.0
 
