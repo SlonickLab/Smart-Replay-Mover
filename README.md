@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.11.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.12.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -516,6 +516,10 @@
 
 ## 📋 Changelog
 
+### v2.12.0 — 🌐 UNC Network Path Fix
+
+- **🌐 UNC network share fix.** Clips now save when the OBS output folder is a UNC path such as `\\server\share\...`. Creating a new game folder on a share used to fail: the folder-creation step collapsed the leading `\\` into a single `\`, so Windows stopped seeing it as a network path and the clip was left in place. Existing folders still worked, so only brand-new game folders broke. ([Issue #30](https://github.com/SlonickLab/Smart-Replay-Mover/issues/30), thanks @SmashinVP)
+
 ### v2.11.0 — 🧩 Folder Templates & 🏷️ Prefix = Folder Name
 
 - **🧩 Folder Templates** — The destination folder is now a **template** of `{tokens}` (`{game}`, `{year}`, `{month}`, `{day}`, `{date}`, `{yearmonth}`, `{hour}`, `{min}`) instead of a fixed `<game>` layout. The default `{game}` keeps the classic behavior; every path segment is sanitized so a template can never escape the OBS output folder. See [Folder Templates](#-folder-templates).
@@ -573,9 +577,6 @@
 - **🖥️ Adaptive UI** — Windows-only settings (Scan Processes, Scale, Position, Update Checker) auto-hide on Linux.
 - **🎬 FFmpeg Thumbnails on Linux** — Proper shell quoting, path validation, and error logging for cross-platform FFmpeg support.
 
-<details>
-<summary>View older versions</summary>
-
 ### v2.8.2
 
 - **🔍 Background Game Detection** — Added an option to scan all running processes for a game if the active window isn't one. This serves as a smart fallback if you alt-tabbed to Discord or the desktop before saving a clip! (Feature request: @EndCod3r)
@@ -588,6 +589,9 @@
 - **🧵 Thread-Safe Notifications** — All notification calls now go through a safe queue processed exclusively on one thread, eliminating cross-thread Win32 GDI deadlocks
 - **⚡ Smart Skip** — On fast systems (NVMe/SSD), the intermediate "Saving..." is automatically skipped in favor of "Clip Saved" when save completes instantly
 - **🐛 Detection Fix** — Fixed double `detect_game()` call during replay buffer save that could cause wrong folder assignment
+
+<details>
+<summary>View older versions</summary>
 
 ### v2.8.0
 
