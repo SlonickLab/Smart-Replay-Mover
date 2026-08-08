@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.11.0
+-- Smart Replay Mover v2.12.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.11.0"
+local VERSION = "2.12.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,13 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.12.0:
+--   - FIX: Clips now save correctly when the OBS output folder is a UNC network share
+--         (\\server\share). Creating a new game folder on a share used to fail because
+--         recursive_mkdir collapsed the leading "\\" into one "\", so Windows no longer
+--         recognized the network path. Existing folders were not affected
+--         (Issue #30, thanks @SmashinVP)
+
 -- CHANGELOG v2.11.0:
 --   - NEW: Filename prefix now matches the destination folder name (custom mappings
 --         and database names included) instead of the raw process name — e.g.
@@ -4052,13 +4059,15 @@ local function sanitize_relative_path(str)
     return table.concat(segments, "/")
 end
 
--- Recursive directory creation (Linux-safe: preserves leading "/" for absolute paths)
+-- Recursive mkdir; keeps the root intact for UNC (//server), drive letters (C:) and absolute paths.
 local function recursive_mkdir(path)
     path = string.gsub(path, "\\", "/")
     local current = ""
 
-    -- Preserve root for absolute paths
-    if string.sub(path, 1, 1) == "/" then
+    -- Preserve the root: UNC "//server" before the single-slash absolute case
+    if string.sub(path, 1, 2) == "//" then
+        current = "//"
+    elseif string.sub(path, 1, 1) == "/" then
         current = "/"
     end
 
@@ -4067,7 +4076,7 @@ local function recursive_mkdir(path)
         if string.match(part, "^%a:$") and current == "" then
             current = part
         else
-            if current == "" or current == "/" then
+            if current == "" or current == "/" or current == "//" then
                 current = current .. part
             else
                 current = current .. "/" .. part
@@ -6667,7 +6676,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.11.0
+-- END OF SCRIPT v2.12.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
