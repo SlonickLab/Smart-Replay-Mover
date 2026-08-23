@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.12.0
+-- Smart Replay Mover v2.13.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.12.0"
+local VERSION = "2.13.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,18 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.13.0:
+--   - FIX: Games run through Proton no longer land in a "steam_app_<AppID>" folder.
+--         When the process is a generic Steam AppID, the script now uses the window
+--         title (the real game name) instead (Issue #32, thanks @WatislavB)
+--   - NEW: Notification sound picker. Choose the sound from a dropdown, drop your own
+--         .wav files into a "sounds" folder next to the script, or pick "Random" to
+--         play a different one each time (Issue #31; random idea by @Jazun)
+--   - NEW: "Single notification" toggle. A replay save then shows only "Saving...",
+--         with no follow-up popups (Issue #31, thanks @Txaverria)
+--   - Notifications: a replay now beeps once (on "Saving...") and shows a single
+--         "Clip Saved" confirmation, instead of the sound and popup repeating
+
 -- CHANGELOG v2.12.0:
 --   - FIX: Clips now save correctly when the OBS output folder is a UNC network share
 --         (\\server\share). Creating a new game folder on a share used to fail because
@@ -289,6 +301,8 @@ local CONFIG = {
     show_notifications = true,
     play_sound = false,
     notification_duration = 3.0,
+    single_notification = false,
+    notification_sound = "default",
     -- FFmpeg settings
     enable_thumbnails = false,
     thumbnail_offset = 10.0,
@@ -3071,6 +3085,7 @@ if IS_WINDOWS and ffi then
 
             HANDLE FindFirstFileA(LPCSTR lpFileName, void* lpFindFileData);
             HANDLE FindFirstFileW(LPCWSTR lpFileName, void* lpFindFileData);
+            BOOL FindNextFileW(HANDLE hFindFile, void* lpFindFileData);
             BOOL FindClose(HANDLE hFindFile);
 
             // Custom Notification Window API
@@ -3878,13 +3893,33 @@ local function show_notification(title, message)
     end
 end
 
+-- Resolves CONFIG.notification_sound to a path relative to SCRIPT_DIR.
+local function resolve_notification_sound_file()
+    local choice = CONFIG.notification_sound
+    if not choice or choice == "" or choice == "default" then
+        return "notification_sound.wav"
+    end
+    if choice == "quiet" then
+        return "notification_sound_silent.wav"
+    end
+    if choice == "random" then
+        local pool = STATE.notification_sounds or {}
+        if #pool > 0 then
+            if not STATE.rng_seeded then math.randomseed(os.time()); STATE.rng_seeded = true end
+            return "sounds/" .. pool[math.random(#pool)]
+        end
+        return "notification_sound.wav"   -- empty sounds/ folder: fall back to default
+    end
+    return "sounds/" .. choice   -- a specific file picked from the sounds/ folder
+end
+
 -- Play notification sound
 local function play_notification_sound()
     if not CONFIG.play_sound then return end
 
     if not WINDOWS_FFI_AVAILABLE then
         if SCRIPT_DIR and SCRIPT_DIR ~= "" then
-            local sound_file = CONFIG.use_quiet_sound and "notification_sound_silent.wav" or "notification_sound.wav"
+            local sound_file = resolve_notification_sound_file()
             local full_path = SCRIPT_DIR .. sound_file
             if obs.os_file_exists(full_path) then
                 if command_exists("paplay") then
@@ -3905,10 +3940,7 @@ local function play_notification_sound()
 
     pcall(function()
         if SCRIPT_DIR and SCRIPT_DIR ~= "" then
-            local sound_file = "notification_sound.wav"
-            if CONFIG.use_quiet_sound then
-                sound_file = "notification_sound_silent.wav"
-            end
+            local sound_file = resolve_notification_sound_file()
             
             local full_path = SCRIPT_DIR .. sound_file
             local result = winmm.PlaySoundA(full_path, nil, WIN.SND_FILENAME + WIN.SND_ASYNC + WIN.SND_NODEFAULT)
@@ -3954,14 +3986,28 @@ local function process_notification_queue()
 
     local notif = table.remove(notification_queue, 1)
 
-    -- Optimization for fast systems (NVMe/SSD):
-    -- If "Saving..." is immediately followed by another notification (e.g. "Clip Saved"),
-    -- skip the intermediate "Saving..." and show the final result right away.
-    if notif.title == "Saving..." and #notification_queue > 0 then
+    if CONFIG.single_notification then
+        -- Single-notification mode: a replay save shows only "Saving...".
+        -- Drop the replay follow-ups; screenshots/recordings/test are left alone.
+        if notif.title == "Clip Saved" or notif.title == "Move Failed" then
+            return
+        end
+    elseif notif.title == "Saving..." and #notification_queue > 0 then
+        -- Fast systems (NVMe/SSD): skip "Saving..." when the result is already queued.
         notif = table.remove(notification_queue, 1)
     end
 
-    play_notification_sound()
+    -- Sound plays once per replay: on "Saving...", or on the result when there was no
+    -- "Saving..." (or it was fast-skipped). The follow-up "Clip Saved"/"Move Failed"
+    -- then stays silent, so a single save beeps a single time.
+    local play_sound = true
+    if notif.title == "Saving..." then
+        STATE.replay_beeped = true
+    elseif notif.title == "Clip Saved" or notif.title == "Move Failed" then
+        play_sound = not STATE.replay_beeped
+        STATE.replay_beeped = false
+    end
+    if play_sound then play_notification_sound() end
     show_notification(notif.title, notif.message)
 end
 
@@ -4051,9 +4097,9 @@ end
 local function sanitize_relative_path(str)
     local segments = {}
     for seg in clean_folder_path(str):gmatch("[^/]+") do
-        seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
-        if seg ~= "" and seg ~= "." and seg ~= ".." then
-            segments[#segments + 1] = seg
+        local s = seg:gsub("^%s+", ""):gsub("%s+$", "")
+        if s ~= "" and s ~= "." and s ~= ".." then
+            segments[#segments + 1] = s
         end
     end
     return table.concat(segments, "/")
@@ -4538,6 +4584,12 @@ local function detect_game()
     if not WINDOWS_FFI_AVAILABLE then
         local linux_process, linux_title = get_active_linux_window_info()
         if linux_process and is_ignored(linux_process) then return nil, linux_title, true end
+        -- Proton/Steam wrapper: the process is a generic steam_app_<AppID>, so the real
+        -- game name lives in the window title (KWin caption / _NET_WM_NAME).
+        if is_generic_steam_app_identifier(linux_process) and linux_title and linux_title ~= "" then
+            dbg("Generic Steam AppID '" .. tostring(linux_process) .. "' -> using window title: " .. linux_title)
+            return linux_title, linux_title, false
+        end
         if linux_process or linux_title then return linux_process, linux_title, false end
         
         local obs_game, obs_window = find_game_in_obs()
@@ -4553,6 +4605,14 @@ local function detect_game()
 
     if process and is_ignored(process) then
         active_ignored = true
+    end
+
+    -- Proton/Steam wrapper (defensive on Windows): the process is a generic
+    -- steam_app_<AppID>, so prefer the window title, which holds the real game.
+    if process and is_generic_steam_app_identifier(process)
+       and window_title_for_matching and window_title_for_matching ~= "" then
+        dbg("Generic Steam AppID '" .. tostring(process) .. "' -> using window title: " .. window_title_for_matching)
+        return window_title_for_matching, window_title_for_matching, false
     end
 
     if process and not active_ignored then
@@ -4602,6 +4662,43 @@ local function get_existing_folder(root, name)
     end)
 
     return ok and result or name
+end
+
+-- Lists the .wav files in the "sounds/" subfolder next to the script (Windows + Linux).
+-- Returns an array of bare filenames; empty on any error so callers degrade gracefully.
+local function list_notification_sounds()
+    local dir = (SCRIPT_DIR or "") .. "sounds"
+    local files = {}
+
+    if not WINDOWS_FFI_AVAILABLE then
+        if command_exists("ls") then
+            local out = capture_command_output("ls -1 " .. quote_shell_arg(dir) .. "/*.wav 2>/dev/null")
+            if out then
+                for line in string.gmatch(out, "[^\r\n]+") do
+                    local name = string.match(line, "([^/\\]+)$")
+                    if name and name ~= "" then table.insert(files, name) end
+                end
+            end
+        end
+        return files
+    end
+
+    local ok = pcall(function()
+        local wsearch = utf8_to_wide(string.gsub(dir .. "/*.wav", "/", "\\"))
+        if not wsearch then return end
+        local data = ffi.new("WIN32_FIND_DATAW")
+        local handle = kernel32.FindFirstFileW(wsearch, data)
+        if is_invalid_handle(handle) then return end
+        repeat
+            local name = wide_to_utf8(data.cFileName, wide_strlen(data.cFileName, 260))
+            if name and name ~= "." and name ~= ".." and name ~= "" then
+                table.insert(files, name)
+            end
+        until kernel32.FindNextFileW(handle, data) == 0
+        kernel32.FindClose(handle)
+    end)
+    if not ok then return {} end
+    return files
 end
 
 local function delete_file(path)
@@ -5570,8 +5667,7 @@ local function on_event(event)
                     obs.timer_add(process_move_queue, 1000)
                     STATE.move_timer_running = true
                 end
-
-                notify("Clip Saved", "Organizing: " .. folder_name)
+                -- The move queue emits the single "Clip Saved" confirmation once the file is organized.
             end
 
             -- Auto-restart buffer logic (Prevent Overlap)
@@ -5995,6 +6091,16 @@ local function read_config(settings)
     CONFIG.play_sound = obs.obs_data_get_bool(settings, "play_sound")
     CONFIG.notification_scale = math.floor(obs.obs_data_get_double(settings, "notification_scale"))
     CONFIG.use_quiet_sound = obs.obs_data_get_bool(settings, "use_quiet_sound")
+    CONFIG.single_notification = obs.obs_data_get_bool(settings, "single_notification")
+    CONFIG.notification_sound = obs.obs_data_get_string(settings, "notification_sound")
+    -- One-time migration: fold the old "Use Quiet Sound" checkbox into the sound dropdown.
+    if CONFIG.use_quiet_sound and (CONFIG.notification_sound == "" or CONFIG.notification_sound == "default") then
+        CONFIG.notification_sound = "quiet"
+        obs.obs_data_set_string(settings, "notification_sound", "quiet")
+        obs.obs_data_set_bool(settings, "use_quiet_sound", false)
+    end
+    if CONFIG.notification_sound == "" then CONFIG.notification_sound = "default" end
+    STATE.notification_sounds = list_notification_sounds()
     CONFIG.notification_duration = obs.obs_data_get_double(settings, "notification_duration")
     CONFIG.enable_thumbnails = obs.obs_data_get_bool(settings, "enable_thumbnails")
     CONFIG.thumbnail_offset = obs.obs_data_get_double(settings, "thumbnail_offset")
@@ -6379,6 +6485,7 @@ function script_properties()
     obs.obs_properties_add_text(notify_group, "notify_help", "Visual popup works only in Borderless Windowed games!", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_bool(notify_group, "show_notifications", "🖼️  Show visual popup (Borderless Windowed only)")
     obs.obs_properties_add_bool(notify_group, "play_sound", "🔊  Play notification sound (works in Fullscreen too)")
+    obs.obs_properties_add_bool(notify_group, "single_notification", "Single notification (show only \"Saving...\")")
     
     local p_scale = obs.obs_properties_add_float_slider(notify_group, "notification_scale", "📏  Scale %", 100.0, 300.0, 10.0)
     
@@ -6388,7 +6495,13 @@ function script_properties()
     obs.obs_property_list_add_string(p_pos, "↘ Bottom Right", "bottom_right")
     obs.obs_property_list_add_string(p_pos, "↙ Bottom Left", "bottom_left")
     
-    obs.obs_properties_add_bool(notify_group, "use_quiet_sound", "🔇  Use Quiet Sound (notification_sound_silent.wav)")
+    local p_snd = obs.obs_properties_add_list(notify_group, "notification_sound", "🔉  Notification sound", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(p_snd, "Default", "default")
+    obs.obs_property_list_add_string(p_snd, "Quiet", "quiet")
+    for _, wav in ipairs(list_notification_sounds()) do
+        obs.obs_property_list_add_string(p_snd, wav, wav)
+    end
+    obs.obs_property_list_add_string(p_snd, "🎲 Random", "random")
 
     obs.obs_properties_add_float_slider(notify_group, "notification_duration", "⏱️  Popup duration (seconds)", 1.0, 10.0, 0.5)
     
@@ -6491,6 +6604,8 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "play_sound", false)
     obs.obs_data_set_default_double(settings, "notification_scale", 100.0)
     obs.obs_data_set_default_bool(settings, "use_quiet_sound", false)
+    obs.obs_data_set_default_bool(settings, "single_notification", false)
+    obs.obs_data_set_default_string(settings, "notification_sound", "default")
     obs.obs_data_set_default_double(settings, "notification_duration", 3.0)
     obs.obs_data_set_default_bool(settings, "enable_thumbnails", false)
     obs.obs_data_set_default_double(settings, "thumbnail_offset", 10.0)
@@ -6676,7 +6791,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.12.0
+-- END OF SCRIPT v2.13.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
