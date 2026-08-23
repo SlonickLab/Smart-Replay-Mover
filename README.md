@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.12.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.13.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -254,7 +254,8 @@
   | Play sound | Audio notification (works in Fullscreen too) |
   | Scale % | Resize popup for 4K/HiDPI monitors, 100–300% (Windows) |
   | Position | Choose popup corner: Top Right, Top Left, Bottom Right, Bottom Left (Windows) |
-  | Quiet Sound | Switch to `notification_sound_silent.wav` for softer alert |
+  | Notification sound | Default, Quiet, any `.wav` in the `sounds/` folder, or Random |
+  | Single notification | Show only the "Saving..." popup, stay quiet after |
   | Duration | How long popup stays visible (1–10 seconds) |
   | Test button | Preview notifications instantly from settings |
 
@@ -357,11 +358,16 @@
   3. Rename to `notification_sound.wav`
   4. Place in the same folder as the script:
 
+  > 💡 The **Default** and **Quiet** choices always use `notification_sound.wav` and `notification_sound_silent.wav` right here in the script folder, so keep those two where they are. Extra `.wav` files go in a `sounds` subfolder next to the script; they fill the Notification sound dropdown, and **Random** picks from that folder.
+
   ```
   📁 Your Folder/
   ├── Smart_Replay_Mover.lua
-  ├── notification_sound.wav          ← Normal sound
-  └── notification_sound_silent.wav   ← Quiet sound (optional)
+  ├── notification_sound.wav          ← Default sound
+  ├── notification_sound_silent.wav   ← Quiet sound
+  └── 📁 sounds/                      ← extra sounds (picker + Random)
+      ├── coin.wav
+      └── chime.wav
   ```
 
   1. Reload the script — done!
@@ -373,7 +379,7 @@
   1. Prepare a quieter sound file
   2. Name it `notification_sound_silent.wav`
   3. Place it in the same folder
-  4. In script settings, check **"Use Quiet Sound"**
+  4. In script settings, set **Notification sound** to **Quiet**
   
   Now you can toggle between the Normal and Quiet versions instantly! Works on both Windows and Linux.
 
@@ -515,6 +521,13 @@
   ---
 
 ## 📋 Changelog
+
+### v2.13.0 — 🐧 Proton Fix & Notification Options
+
+- **🐧 Proton folder names.** Games launched through Proton no longer save into a `steam_app_<AppID>` folder. When the running process is a generic Steam AppID, the script now takes the real game name from the window title. ([Issue #32](https://github.com/SlonickLab/Smart-Replay-Mover/issues/32), thanks @WatislavB)
+- **🔉 Notification sound picker.** Pick the notification sound from a dropdown. Drop your own `.wav` files into a `sounds` folder next to the script and they appear as choices, or pick **Random** to play a different one on each clip. ([Issue #31](https://github.com/SlonickLab/Smart-Replay-Mover/issues/31); random idea by @Jazun)
+- **🔔 Single notification.** A new toggle shows only the "Saving..." popup on a replay save and stays quiet afterward. Screenshots, recordings, and the test button are unaffected. ([Issue #31](https://github.com/SlonickLab/Smart-Replay-Mover/issues/31), thanks @Txaverria)
+- **🔧 Notification polish.** A replay now beeps once (on "Saving...") and shows a single "Clip Saved" confirmation, instead of the sound and popup repeating while the clip is organized.
 
 ### v2.12.0 — 🌐 UNC Network Path Fix
 
