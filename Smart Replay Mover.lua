@@ -7073,7 +7073,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.13.0
+-- END OF SCRIPT v2.14.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
