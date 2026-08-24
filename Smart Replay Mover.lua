@@ -3201,6 +3201,7 @@ if IS_WINDOWS and ffi then
 
             BOOL ShellExecuteExA(SHELLEXECUTEINFOA *pExecInfo);
             DWORD WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+            BOOL GetExitCodeProcess(HANDLE hProcess, DWORD* lpExitCode);
         ]]
 
         user32 = ffi.load("user32")
@@ -3251,6 +3252,7 @@ local WIN = {
     SW_HIDE = 0,
     SW_SHOWNOACTIVATE = 4,
     SEE_MASK_NOCLOSEPROCESS = 0x00000040,
+    WAIT_OBJECT_0 = 0x00000000,
     LWA_ALPHA = 0x00000002,
     SM_CXSCREEN = 0,
     SM_CYSCREEN = 1,
@@ -4845,25 +4847,50 @@ local function run_task_sync_hidden(commands, unique_id)
     sei.nShow = WIN.SW_HIDE
     sei.hInstApp = nil
 
-    -- Execute
-    if shell32.ShellExecuteExA(sei) ~= 0 then
-        -- Wait for finish (Blocking)
-        if sei.hProcess ~= nil then
-            -- SAFETY: INFINITE wait required for large video files (embedding can take minutes)
-            -- WARNING: This will block OBS UI during the operation! 
-            -- This is expected behavior for a synchronous operation to ensure file integrity.
-            kernel32.WaitForSingleObject(sei.hProcess, 0xFFFFFFFF)
-            kernel32.CloseHandle(sei.hProcess)
-        end
-        
-        -- Cleanup
-        os.remove(bat_path)
-        return true
-    else
+    -- Execute and retain the process handle so both waiting and the final child
+    -- exit status can be checked. ShellExecuteEx success only means cmd.exe was
+    -- launched; it does not mean the generated FFmpeg batch completed.
+    if shell32.ShellExecuteExA(sei) == 0 then
         log("ERROR: ShellExecuteEx failed")
         os.remove(bat_path)
         return false
     end
+
+    if sei.hProcess == nil then
+        log("ERROR: ShellExecuteEx returned no process handle")
+        os.remove(bat_path)
+        return false
+    end
+
+    -- SAFETY: INFINITE wait required for large video files (embedding can take minutes)
+    -- WARNING: This will block OBS UI during the operation!
+    -- This is expected behavior for a synchronous operation to ensure file integrity.
+    local wait_result = tonumber(kernel32.WaitForSingleObject(sei.hProcess, 0xFFFFFFFF))
+    if wait_result ~= WIN.WAIT_OBJECT_0 then
+        log("ERROR: Waiting for FFmpeg task failed (status " .. tostring(wait_result) .. ")")
+        kernel32.CloseHandle(sei.hProcess)
+        os.remove(bat_path)
+        return false
+    end
+
+    local exit_code = ffi.new("DWORD[1]")
+    if kernel32.GetExitCodeProcess(sei.hProcess, exit_code) == 0 then
+        log("ERROR: Could not read FFmpeg task exit code")
+        kernel32.CloseHandle(sei.hProcess)
+        os.remove(bat_path)
+        return false
+    end
+
+    local task_exit_code = tonumber(exit_code[0])
+    kernel32.CloseHandle(sei.hProcess)
+    os.remove(bat_path)
+
+    if task_exit_code ~= 0 then
+        log("ERROR: FFmpeg task exited with code " .. tostring(task_exit_code))
+        return false
+    end
+
+    return true
 end
 
 local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
@@ -4945,10 +4972,14 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     dbg("Processing Thumbnail (Sync): " .. unique_id)
     
     -- Run it!
-    run_task_sync_hidden(commands, unique_id)
+    local task_succeeded = run_task_sync_hidden(commands, unique_id)
     
     -- Cleanup temp thumb
     os.remove(temp_thumb)
+
+    if not task_succeeded then
+        return false
+    end
     
     -- Validation (Now safe because process is guaranteed finished)
     if obs.os_file_exists(target) then
