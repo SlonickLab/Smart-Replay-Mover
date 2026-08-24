@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.13.0
+-- Smart Replay Mover v2.14.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.13.0"
+local VERSION = "2.14.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,19 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.14.0:
+--   - FIX: A failed FFmpeg run no longer costs you the recording. The script waited for
+--         FFmpeg but never read its exit code, so a half-finished file larger than 90% of
+--         the source counted as success and the original was deleted (PR #34, thanks
+--         @Txaverria)
+--   - FIX: Custom OBS audio track names are kept when a thumbnail is embedded into an MP4.
+--         The names are read with ffprobe before the remux, written back after, and the
+--         result is verified before the source is removed (PR #33, thanks @Txaverria)
+--   - CHANGE: Cover art embedding now runs for MP4 and MKV only. MOV, FLV, TS, AVI and WebM
+--         are moved without remuxing, since attached-picture streams do not survive there
+--   - MP4 thumbnails need ffprobe next to ffmpeg. Without it the clip is moved without a
+--         thumbnail instead of being remuxed blindly
+
 -- CHANGELOG v2.13.0:
 --   - FIX: Games run through Proton no longer land in a "steam_app_<AppID>" folder.
 --         When the process is a generic Steam AppID, the script now uses the window
@@ -4865,7 +4878,7 @@ local function run_task_sync_hidden(commands, unique_id)
     -- SAFETY: INFINITE wait required for large video files (embedding can take minutes)
     -- WARNING: This will block OBS UI during the operation!
     -- This is expected behavior for a synchronous operation to ensure file integrity.
-    local wait_result = tonumber(kernel32.WaitForSingleObject(sei.hProcess, 0xFFFFFFFF))
+    local wait_result = tonumber(kernel32.WaitForSingleObject(sei.hProcess, WIN.INFINITE))
     if wait_result ~= WIN.WAIT_OBJECT_0 then
         log("ERROR: Waiting for FFmpeg task failed (status " .. tostring(wait_result) .. ")")
         kernel32.CloseHandle(sei.hProcess)
@@ -4896,28 +4909,31 @@ end
 -- Locate the ffprobe executable shipped alongside the configured FFmpeg.
 -- ffprobe is required for safe MP4 stream-metadata preservation and validation.
 local function resolve_ffprobe_path(ffmpeg_path)
+    local directory = string.match(ffmpeg_path or "", "^(.*[/\\])")
+
+    -- Windows: never shell out to locate it. os.execute would flash a console window
+    -- and defeat the hidden task runner, so fall back to the bare name and let the
+    -- hidden batch resolve it through PATH.
     if IS_WINDOWS then
-        local directory = string.match(ffmpeg_path or "", "^(.*[/\\])")
         local candidate = directory and (directory .. "ffprobe.exe") or "ffprobe.exe"
         if obs.os_file_exists(candidate) then return candidate end
-
-        -- Also support an FFmpeg/FFprobe pair available through PATH.
-        if run_shell_command("where ffprobe.exe >nul 2>nul") then
-            return "ffprobe.exe"
-        end
-        return nil
+        return "ffprobe.exe"
     end
 
     if ffmpeg_path == "ffmpeg" then
-        if command_exists("ffprobe") then return "ffprobe" end
-        return nil
+        return command_exists("ffprobe") and "ffprobe" or nil
     end
 
-    local directory = string.match(ffmpeg_path or "", "^(.*[/\\])")
     local candidate = directory and (directory .. "ffprobe") or "ffprobe"
     if obs.os_file_exists(candidate) then return candidate end
-    if command_exists("ffprobe") then return "ffprobe" end
-    return nil
+    return command_exists("ffprobe") and "ffprobe" or nil
+end
+
+-- Arguments end up inside a temporary .bat on Windows, so percent signs must be
+-- doubled to prevent cmd.exe variable expansion.
+local function quote_task_arg(value)
+    if not IS_WINDOWS then return quote_shell_arg(value) end
+    return '"' .. tostring(value):gsub("%%", "%%%%"):gsub('"', '\\"') .. '"'
 end
 
 local function get_preserved_audio_name(tags)
@@ -4948,28 +4964,20 @@ local function probe_media_streams(ffmpeg_path, path, unique_id, phase)
         return nil, "ffprobe was not found beside FFmpeg or in PATH"
     end
 
-    local function probe_q(value)
-        if IS_WINDOWS then
-            value = tostring(value):gsub("%%", "%%%%"):gsub('"', '\\"')
-            return '"' .. value .. '"'
-        end
-        return quote_shell_arg(value)
-    end
-
     local probe_output = join_path(
         TEMP_DIR,
         string.format("srm_probe_%s_%s.txt", unique_id, phase or "media")
     )
     local command = string.format(
         '%s -v error -show_entries "stream=codec_type:stream_disposition=attached_pic:stream_tags=name,title,handler_name" -of "default=noprint_wrappers=0:nokey=0" %s > %s',
-        probe_q(ffprobe_path), probe_q(path), probe_q(probe_output)
+        quote_task_arg(ffprobe_path), quote_task_arg(path), quote_task_arg(probe_output)
     )
 
     -- Never accept stale probe data if a previous process was interrupted.
     os.remove(probe_output)
     if not run_task_sync_hidden({ command }, unique_id .. "_probe_" .. (phase or "media")) then
         os.remove(probe_output)
-        return nil, "ffprobe could not inspect the file"
+        return nil, "ffprobe could not inspect the file (is ffprobe next to ffmpeg?)"
     end
 
     local probe_file = io.open(probe_output, "r")
@@ -5164,23 +5172,13 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     else
         local audio_metadata = {}
 
-        -- This value is written into a temporary .bat file on Windows, so
-        -- percent signs must be doubled to prevent cmd.exe variable expansion.
-        local function metadata_q(value)
-            if IS_WINDOWS then
-                value = tostring(value):gsub("%%", "%%%%"):gsub('"', '\\"')
-                return '"' .. value .. '"'
-            end
-            return quote_shell_arg(value)
-        end
-
         for audio_index = 0, source_info.audio_count - 1 do
             local track_name = source_info.audio_names[audio_index + 1]
             if track_name and track_name ~= "" then
                 table.insert(audio_metadata, string.format(
                     '-metadata:s:a:%d %s',
                     audio_index,
-                    metadata_q("title=" .. track_name)
+                    quote_task_arg("title=" .. track_name)
                 ))
                 dbg(string.format(
                     "Preserving audio track %d name: %s",

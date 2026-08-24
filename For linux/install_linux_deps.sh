@@ -164,6 +164,13 @@ else
     fi
 fi
 
+# ffprobe ships with the ffmpeg package and is what keeps MP4 audio track names.
+if command -v ffprobe &>/dev/null; then
+    echo -e "  ${GREEN}✅ ffprobe${NC} — available (MP4 thumbnails will keep audio track names)"
+else
+    echo -e "  ${YELLOW}⚠️  ffprobe not found${NC} — MP4 files will be moved without a thumbnail"
+fi
+
 # ── KDE Wayland note ────────────────────────────────────────────────────────
 
 echo ""

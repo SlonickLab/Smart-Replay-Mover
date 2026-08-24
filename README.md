@@ -118,7 +118,7 @@
 - `xprop` — game detection (X11)
 - `notify-send` — desktop notifications
 - `paplay` / `pw-play` — notification sound
-- `ffmpeg` — video thumbnails
+- `ffmpeg` / `ffprobe` — video thumbnails (both come from the same package)
 - Also checks for `gdbus` (KDE Wayland support)
 
   1. **Done!** The script auto-detects Linux — no configuration needed.
@@ -133,7 +133,7 @@
   | `xprop` | Game detection (X11) | `sudo pacman -S xorg-xprop` | `sudo apt install x11-utils` |
   | `notify-send` | Desktop notifications | `sudo pacman -S libnotify` | `sudo apt install libnotify-bin` |
   | `paplay` / `pw-play` | Notification sound | Usually pre-installed | Usually pre-installed |
-  | `ffmpeg` | Video thumbnails | `sudo pacman -S ffmpeg` | `sudo apt install ffmpeg` |
+  | `ffmpeg` / `ffprobe` | Video thumbnails | `sudo pacman -S ffmpeg` | `sudo apt install ffmpeg` |
 
   </details>
 
@@ -461,6 +461,15 @@
 
   ---
 
+### 🖼️ Thumbnails not appearing on MP4 files?
+
+- Thumbnails are embedded into **MP4 and MKV** only. MOV, FLV, TS, AVI and WebM are moved without one, because the cover-art stream does not survive those containers
+- MP4 files also need `ffprobe` next to `ffmpeg`. It comes in the same download, so if you extracted the whole FFmpeg folder it is already there
+- Enable **Debug Mode** in Tools & Debug — the Script Log names the exact reason a thumbnail was skipped
+- Your clip is never at risk here: whenever anything looks wrong the file is moved untouched instead of being remuxed
+
+  ---
+
 ### 🐧 Linux: Notifications not showing?
 
   Make sure `notify-send` is installed:
@@ -477,6 +486,7 @@
 ### 🐧 Linux: FFmpeg thumbnails not working?
 
 - Check that FFmpeg path is correct (`ffmpeg` for PATH or `/usr/bin/ffmpeg` for absolute)
+- Check that `ffprobe` is installed too — MP4 files need it, and it comes from the same package
 - Enable **Debug Mode** in Tools & Debug and check the OBS Script Log for errors
 - Check file permissions for the video files
 
@@ -522,6 +532,13 @@
   ---
 
 ## 📋 Changelog
+
+### v2.14.0 — 🖼️ Safer Thumbnails
+
+- **💾 A failed FFmpeg run could cost you the recording.** The script waited for FFmpeg to finish but never read its exit code, so a crashed or half-finished run still counted as a success whenever the leftover file was larger than 90% of the original — and the original was then deleted. The exit code is now checked, and anything other than a clean finish falls back to a normal move. ([PR #34](https://github.com/SlonickLab/Smart-Replay-Mover/pull/34), thanks @Txaverria)
+- **🔊 MP4 audio track names survive thumbnail embedding.** Embedding cover art rewrites the MP4, and the custom track names you set in OBS were not carried over, so VLC showed "Track 1" and "Track 2" instead of your labels. The names are now read before the remux and written back after, and the finished file is compared against the original before the source is removed. ([PR #33](https://github.com/SlonickLab/Smart-Replay-Mover/pull/33), thanks @Txaverria)
+- **🎞️ MP4 and MKV only.** Cover art embedding now runs for MP4 and MKV. MOV, FLV, TS, AVI and WebM are moved normally without a remux, because FFmpeg's attached-picture stream does not survive those containers anyway.
+- **🔍 MP4 thumbnails need `ffprobe`.** It ships in the same FFmpeg download and the same Linux package. If it is missing, the clip is moved without a thumbnail instead of being remuxed blindly, so your track names stay intact.
 
 ### v2.13.0 — 🐧 Proton Fix & Notification Options
 
