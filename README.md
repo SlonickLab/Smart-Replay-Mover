@@ -270,8 +270,8 @@
 
   | Setting | Description |
   |---------|-------------|
-  | Enable Thumbnails | Embed frame from video as cover art |
-  | FFmpeg Path | Path to `ffmpeg.exe` (Windows) or `ffmpeg` (Linux) |
+  | Enable Thumbnails | Embed an MP4/MKV frame as cover art |
+  | FFmpeg Path | Path to `ffmpeg.exe` (Windows) or `ffmpeg` (Linux); MP4 validation also requires the bundled `ffprobe` |
   | Thumbnail Offset | Time (sec) from end of video to grab the frame |
 
   ---
@@ -489,7 +489,7 @@
 ### Windows Setup
 
   1. Go to [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) (recommended Windows builds).
-  2. Download the `ffmpeg-release-essentials.zip`.
+  2. Download the `ffmpeg-release-essentials.zip` (it includes both `ffmpeg` and `ffprobe`).
   3. Extract it to a permanent folder (e.g., `C:\Program Files\ffmpeg`).
   4. In script settings → **FFmpeg Thumbnails** → Enable and browse to `ffmpeg.exe` (inside the `bin` folder).
 
@@ -501,7 +501,8 @@
 ### ✨ How It Works
 
 - **MKV files** — thumbnail attached as Matroska attachment (best for Icaros on Windows)
-- **MP4 files** — thumbnail embedded as attached picture stream
+- **MP4 files** — thumbnail embedded as an attached picture stream; audio-track names and the finished output are verified with `ffprobe` before the source is removed
+- **Other containers** — moved normally without remuxing; FFmpeg's attached-picture behavior is not portable to true MOV, FLV, TS, AVI, or WebM output
 - **Silent & Invisible** — FFmpeg runs completely in the background without popups
 - **No Quality Loss** — Metadata is embedded without re-encoding your video
 - **Cross-Platform** — Proper shell quoting on both Windows and Linux

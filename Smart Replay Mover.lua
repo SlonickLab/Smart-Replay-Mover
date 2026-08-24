@@ -4893,8 +4893,193 @@ local function run_task_sync_hidden(commands, unique_id)
     return true
 end
 
+-- Locate the ffprobe executable shipped alongside the configured FFmpeg.
+-- ffprobe is required for safe MP4 stream-metadata preservation and validation.
+local function resolve_ffprobe_path(ffmpeg_path)
+    if IS_WINDOWS then
+        local directory = string.match(ffmpeg_path or "", "^(.*[/\\])")
+        local candidate = directory and (directory .. "ffprobe.exe") or "ffprobe.exe"
+        if obs.os_file_exists(candidate) then return candidate end
+
+        -- Also support an FFmpeg/FFprobe pair available through PATH.
+        if run_shell_command("where ffprobe.exe >nul 2>nul") then
+            return "ffprobe.exe"
+        end
+        return nil
+    end
+
+    if ffmpeg_path == "ffmpeg" then
+        if command_exists("ffprobe") then return "ffprobe" end
+        return nil
+    end
+
+    local directory = string.match(ffmpeg_path or "", "^(.*[/\\])")
+    local candidate = directory and (directory .. "ffprobe") or "ffprobe"
+    if obs.os_file_exists(candidate) then return candidate end
+    if command_exists("ffprobe") then return "ffprobe" end
+    return nil
+end
+
+local function get_preserved_audio_name(tags)
+    if not tags then return nil end
+    if tags.name and tags.name ~= "" then return tags.name end
+    if tags.title and tags.title ~= "" then return tags.title end
+
+    -- Keep a genuinely descriptive handler name, but do not promote the
+    -- generic values written by OBS/FFmpeg into user-visible track labels.
+    local handler_name = tags.handler_name
+    local generic_handlers = {
+        ["soundhandler"] = true,
+        ["obs audio handler"] = true,
+    }
+    if handler_name and handler_name ~= "" and
+       not generic_handlers[string.lower(handler_name)] then
+        return handler_name
+    end
+    return nil
+end
+
+-- Read the media layout in a small, deterministic text format. The resulting
+-- table is used both to capture source MP4 audio labels and to validate the
+-- remuxed output before the original recording may be deleted.
+local function probe_media_streams(ffmpeg_path, path, unique_id, phase)
+    local ffprobe_path = resolve_ffprobe_path(ffmpeg_path)
+    if not ffprobe_path then
+        return nil, "ffprobe was not found beside FFmpeg or in PATH"
+    end
+
+    local function probe_q(value)
+        if IS_WINDOWS then
+            value = tostring(value):gsub("%%", "%%%%"):gsub('"', '\\"')
+            return '"' .. value .. '"'
+        end
+        return quote_shell_arg(value)
+    end
+
+    local probe_output = join_path(
+        TEMP_DIR,
+        string.format("srm_probe_%s_%s.txt", unique_id, phase or "media")
+    )
+    local command = string.format(
+        '%s -v error -show_entries "stream=codec_type:stream_disposition=attached_pic:stream_tags=name,title,handler_name" -of "default=noprint_wrappers=0:nokey=0" %s > %s',
+        probe_q(ffprobe_path), probe_q(path), probe_q(probe_output)
+    )
+
+    -- Never accept stale probe data if a previous process was interrupted.
+    os.remove(probe_output)
+    if not run_task_sync_hidden({ command }, unique_id .. "_probe_" .. (phase or "media")) then
+        os.remove(probe_output)
+        return nil, "ffprobe could not inspect the file"
+    end
+
+    local probe_file = io.open(probe_output, "r")
+    if not probe_file then
+        os.remove(probe_output)
+        return nil, "ffprobe did not create readable output"
+    end
+
+    local output = probe_file:read("*a") or ""
+    probe_file:close()
+    os.remove(probe_output)
+    if output == "" then
+        return nil, "ffprobe returned no stream information"
+    end
+
+    local info = {
+        audio_count = 0,
+        audio_names = {},
+        primary_video_count = 0,
+        attached_pic_count = 0,
+    }
+    local stream = nil
+
+    local function finish_stream()
+        if not stream then return end
+        if stream.codec_type == "audio" then
+            info.audio_count = info.audio_count + 1
+            info.audio_names[info.audio_count] =
+                get_preserved_audio_name(stream.tags) or false
+        elseif stream.codec_type == "video" then
+            if stream.attached_pic then
+                info.attached_pic_count = info.attached_pic_count + 1
+            else
+                info.primary_video_count = info.primary_video_count + 1
+            end
+        end
+    end
+
+    for line in string.gmatch(output, "[^\r\n]+") do
+        if line == "[STREAM]" then
+            stream = { tags = {}, attached_pic = false }
+        elseif line == "[/STREAM]" then
+            finish_stream()
+            stream = nil
+        elseif stream then
+            local key, value = string.match(line, "^([^=]+)=(.*)$")
+            if key == "codec_type" then
+                stream.codec_type = value
+            elseif key == "DISPOSITION:attached_pic" then
+                stream.attached_pic = value == "1"
+            else
+                local tag_key = string.match(key or "", "^TAG:(.+)$")
+                if tag_key and value and value ~= "" then
+                    stream.tags[tag_key] = value
+                end
+            end
+        end
+    end
+
+    return info
+end
+
+local function verify_mp4_thumbnail_output(ffmpeg_path, target, expected, unique_id)
+    local actual, probe_error = probe_media_streams(
+        ffmpeg_path, target, unique_id, "output"
+    )
+    if not actual then
+        return false, "could not verify output: " .. tostring(probe_error)
+    end
+
+    if actual.primary_video_count ~= expected.primary_video_count then
+        return false, string.format(
+            "primary video stream count changed (%d -> %d)",
+            expected.primary_video_count, actual.primary_video_count
+        )
+    end
+    if actual.audio_count ~= expected.audio_count then
+        return false, string.format(
+            "audio stream count changed (%d -> %d)",
+            expected.audio_count, actual.audio_count
+        )
+    end
+    if actual.attached_pic_count < 1 then
+        return false, "embedded cover-art stream is missing"
+    end
+
+    for index = 1, expected.audio_count do
+        local expected_name = expected.audio_names[index]
+        if expected_name and actual.audio_names[index] ~= expected_name then
+            return false, string.format(
+                "audio track %d name changed (%s -> %s)",
+                index,
+                tostring(expected_name),
+                tostring(actual.audio_names[index] or "missing")
+            )
+        end
+    end
+
+    return true
+end
+
 local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     if not ffmpeg_path or ffmpeg_path == "" then return false end
+
+    local source_ext = string.lower(string.match(src, "%.([^.]+)$") or "")
+    if source_ext ~= "mp4" and source_ext ~= "mkv" then
+        log("Thumbnail embedding skipped for ." .. source_ext ..
+            " files; only MP4 and MKV are supported safely")
+        return false, "unsupported_container"
+    end
 
     -- Path correction
     local lower_path = string.lower(ffmpeg_path)
@@ -4931,6 +5116,23 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     math.randomseed(os.time() + (os.clock() * 1000))
     local unique_id = tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
     local temp_thumb = src .. "." .. unique_id .. ".thumb.jpg"
+    local source_info = nil
+
+    if source_ext == "mp4" then
+        local probe_error = nil
+        source_info, probe_error = probe_media_streams(
+            ffmpeg_path, src, unique_id, "source"
+        )
+        if not source_info then
+            log("WARNING: MP4 thumbnail embedding skipped: " .. tostring(probe_error))
+            log("The original recording will be moved without remuxing so its track names remain intact")
+            return false, "probe_failed"
+        end
+        if source_info.primary_video_count < 1 then
+            log("WARNING: MP4 thumbnail embedding skipped: source has no primary video stream")
+            return false, "probe_failed"
+        end
+    end
     
     local commands = {}
 
@@ -4953,15 +5155,44 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
     -- MKV supports "Attachments" (Best for Cover Art support in Windows/Icaros)
     -- MP4 requires "Video Stream" with Disposition (Apple/Standard style)
     
-    local is_mkv = string.match(string.lower(src), "%.mkv$") ~= nil
+    local is_mkv = source_ext == "mkv"
     local cmd_embed = ""
     
     if is_mkv then
         cmd_embed = string.format('%s -i %s -map 0 -c copy -attach %s -metadata:s:t:0 mimetype=image/jpeg -metadata:s:t:0 filename=cover.jpg -y %s',
             q(ffmpeg_path), q(src), q(temp_thumb), q(target))
     else
-        cmd_embed = string.format('%s -i %s -i %s -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title=Cover_Art -y %s',
-            q(ffmpeg_path), q(src), q(temp_thumb), q(target))
+        local audio_metadata = {}
+
+        -- This value is written into a temporary .bat file on Windows, so
+        -- percent signs must be doubled to prevent cmd.exe variable expansion.
+        local function metadata_q(value)
+            if IS_WINDOWS then
+                value = tostring(value):gsub("%%", "%%%%"):gsub('"', '\\"')
+                return '"' .. value .. '"'
+            end
+            return quote_shell_arg(value)
+        end
+
+        for audio_index = 0, source_info.audio_count - 1 do
+            local track_name = source_info.audio_names[audio_index + 1]
+            if track_name and track_name ~= "" then
+                table.insert(audio_metadata, string.format(
+                    '-metadata:s:a:%d %s',
+                    audio_index,
+                    metadata_q("title=" .. track_name)
+                ))
+                dbg(string.format(
+                    "Preserving audio track %d name: %s",
+                    audio_index + 1,
+                    track_name
+                ))
+            end
+        end
+
+        cmd_embed = string.format('%s -i %s -i %s -map 0 -map 1 -c:v:0 copy -c:a copy -c:v:1 mjpeg -disposition:v:1 attached_pic -metadata:s:v:1 title=Cover_Art %s -y %s',
+            q(ffmpeg_path), q(src), q(temp_thumb),
+            table.concat(audio_metadata, " "), q(target))
     end
         
     table.insert(commands, cmd_embed)
@@ -4988,6 +5219,17 @@ local function run_ffmpeg_thumbnail(ffmpeg_path, src, target, offset)
         
         -- If target is valid (not empty and reasonable size)
         if target_size > (src_size * 0.9) then
+            if source_ext == "mp4" then
+                local verified, verification_error = verify_mp4_thumbnail_output(
+                    ffmpeg_path, target, source_info, unique_id
+                )
+                if not verified then
+                    log("ERROR: MP4 thumbnail verification failed: " ..
+                        tostring(verification_error))
+                    return false, "verification_failed"
+                end
+                dbg("MP4 thumbnail output verified successfully")
+            end
             return true
         end
     end
@@ -5151,7 +5393,10 @@ local function move_file(src, folder_name, game_name)
         -- FFMPEG THUMBNAIL LOGIC
         if CONFIG.enable_thumbnails and is_video_file(src) and CONFIG.ffmpeg_path ~= "" then
             log("Attempting to embed thumbnail with FFmpeg...")
-            if run_ffmpeg_thumbnail(CONFIG.ffmpeg_path, src, target_path, CONFIG.thumbnail_offset) then
+            local thumbnail_ok, thumbnail_error = run_ffmpeg_thumbnail(
+                CONFIG.ffmpeg_path, src, target_path, CONFIG.thumbnail_offset
+            )
+            if thumbnail_ok then
                 log("Thumbnail embedded successfully!")
                 log("Moved (FFmpeg): " .. new_filename)
                 log("To: " .. target_dir)
@@ -5162,7 +5407,15 @@ local function move_file(src, folder_name, game_name)
                 STATE.files_moved = STATE.files_moved + 1
                 return true
             else
-                log("FFmpeg failed or produced invalid file. Falling back to standard move.")
+                if thumbnail_error == "unsupported_container" then
+                    log("Moving without thumbnail to preserve the original container")
+                elseif thumbnail_error == "probe_failed" then
+                    log("Moving without thumbnail because MP4 metadata could not be preserved safely")
+                elseif thumbnail_error == "verification_failed" then
+                    log("Moving without thumbnail because the remuxed MP4 did not pass verification")
+                else
+                    log("FFmpeg failed or produced invalid file. Falling back to standard move.")
+                end
                 -- Clean up potential failed target file
                 if obs.os_file_exists(target_path) then
                     os.remove(target_path)
@@ -6598,7 +6851,7 @@ function script_properties()
     obs.obs_properties_add_bool(ffmpeg_group, "enable_thumbnails", "🖼️  Embed Video Dictionary (Thumbnail)")
     obs.obs_properties_add_float_slider(ffmpeg_group, "thumbnail_offset", "⏱️  Thumbnail Offset (seconds from end)", 1.0, 60.0, 1.0)
     obs.obs_properties_add_path(ffmpeg_group, "ffmpeg_path", "📂  FFmpeg Executable Path (ffmpeg.exe)", obs.OBS_PATH_FILE, "Executables (*.exe);;All Files (*.*)", nil)
-    obs.obs_properties_add_text(ffmpeg_group, "ffmpeg_info", "Note: Requires FFmpeg installed. Adds processing time regarding disk speed.", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(ffmpeg_group, "ffmpeg_info", "Note: Embedded thumbnails support MP4 and MKV. MP4 safety checks also require ffprobe (normally included with FFmpeg).", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "ffmpeg_section", "🎬  FFMPEG THUMBNAILS (Advanced)", obs.OBS_GROUP_NORMAL, ffmpeg_group)
 
     -- Apply initial visibility based on detected OS
