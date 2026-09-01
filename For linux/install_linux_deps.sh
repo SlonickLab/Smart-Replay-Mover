@@ -30,31 +30,54 @@ echo ""
 PKG_MANAGER=""
 INSTALL_CMD=""
 
+# Alpine images and containers often ship without sudo, and running as root
+# needs no elevation at all.
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo &>/dev/null; then
+        SUDO="sudo"
+    elif command -v doas &>/dev/null; then
+        SUDO="doas"
+    else
+        echo -e "${YELLOW}⚠️  Neither sudo nor doas found. Re-run this script as root.${NC}"
+        echo ""
+    fi
+fi
+
 if command -v apt &>/dev/null; then
     PKG_MANAGER="apt"
-    INSTALL_CMD="sudo apt-get install -y"
-    echo -e "${YELLOW}📦 Updating package lists (sudo apt-get update)...${NC}"
-    sudo apt-get update
+    INSTALL_CMD="$SUDO apt-get install -y"
 elif command -v dnf &>/dev/null; then
     PKG_MANAGER="dnf"
-    INSTALL_CMD="sudo dnf install -y"
+    INSTALL_CMD="$SUDO dnf install -y"
 elif command -v pacman &>/dev/null; then
     PKG_MANAGER="pacman"
-    INSTALL_CMD="sudo pacman -S --noconfirm"
+    INSTALL_CMD="$SUDO pacman -S --noconfirm"
 elif command -v zypper &>/dev/null; then
     PKG_MANAGER="zypper"
-    INSTALL_CMD="sudo zypper install -y"
+    INSTALL_CMD="$SUDO zypper install -y"
 elif command -v apk &>/dev/null; then
     PKG_MANAGER="apk"
-    INSTALL_CMD="sudo apk add"
+    INSTALL_CMD="$SUDO apk add"
 else
     echo -e "${RED}❌ Could not detect package manager!${NC}"
     echo "   Please install the following packages manually:"
-    echo "   • xprop (usually in xorg-xprop or x11-utils)"
-    echo "   • notify-send (usually in libnotify or libnotify-bin)"
+    echo "   • xprop (usually in xprop, xorg-xprop or x11-utils)"
+    echo "   • notify-send (usually in libnotify, libnotify-bin or libnotify-tools)"
     echo "   • paplay (usually in pulseaudio-utils) OR pw-play (pipewire)"
+    echo "   • ffmpeg and ffprobe (both come from the ffmpeg package)"
     exit 1
 fi
+
+# Package lists are refreshed only when something actually has to be installed.
+APT_UPDATED=0
+ensure_pkg_lists() {
+    [ "$PKG_MANAGER" = "apt" ] || return 0
+    [ "$APT_UPDATED" -eq 0 ] || return 0
+    echo -e "  ${YELLOW}📦 Updating package lists (apt-get update)...${NC}"
+    $SUDO apt-get update
+    APT_UPDATED=1
+}
 
 echo -e "${GREEN}✅ Detected package manager: ${BOLD}${PKG_MANAGER}${NC}"
 echo ""
@@ -72,7 +95,7 @@ case "$PKG_MANAGER" in
         AUDIO_PKG="pulseaudio-utils"
         ;;
     dnf)
-        XPROP_PKG="xorg-x11-utils"
+        XPROP_PKG="xprop"
         NOTIFY_PKG="libnotify"
         AUDIO_PKG="pulseaudio-utils"
         ;;
@@ -104,17 +127,22 @@ install_if_missing() {
     local description="$3"
 
     if command -v "$cmd_name" &>/dev/null; then
-        echo -e "  ${GREEN}✅ ${description}${NC} — already installed ($(command -v $cmd_name))"
+        echo -e "  ${GREEN}✅ ${description}${NC} — already installed ($(command -v "$cmd_name"))"
         SKIPPED=$((SKIPPED + 1))
+        return 0
+    fi
+
+    echo -e "  ${YELLOW}📦 Installing ${description}${NC} (${pkg_name})..."
+    ensure_pkg_lists
+    if ! $INSTALL_CMD "$pkg_name"; then
+        echo -e "  ${RED}❌ ${description} — could not install '${pkg_name}'. Install it manually.${NC}"
+        return 1
+    fi
+    if command -v "$cmd_name" &>/dev/null; then
+        echo -e "  ${GREEN}✅ ${description} installed successfully!${NC}"
+        INSTALLED=$((INSTALLED + 1))
     else
-        echo -e "  ${YELLOW}📦 Installing ${description}${NC} (${pkg_name})..."
-        $INSTALL_CMD "$pkg_name"
-        if command -v "$cmd_name" &>/dev/null; then
-            echo -e "  ${GREEN}✅ ${description} installed successfully!${NC}"
-            INSTALLED=$((INSTALLED + 1))
-        else
-            echo -e "  ${RED}⚠️  ${description} — package installed but command not found. May need a relog.${NC}"
-        fi
+        echo -e "  ${RED}⚠️  ${description} — installed, but '${cmd_name}' is not on PATH yet. May need a relog.${NC}"
     fi
 }
 
@@ -138,12 +166,14 @@ elif command -v pw-play &>/dev/null; then
     SKIPPED=$((SKIPPED + 1))
 else
     echo -e "  ${YELLOW}📦 Installing audio playback${NC} (${AUDIO_PKG})..."
-    $INSTALL_CMD "$AUDIO_PKG" || true
-    if command -v paplay &>/dev/null || command -v pw-play &>/dev/null; then
+    ensure_pkg_lists
+    if ! $INSTALL_CMD "$AUDIO_PKG"; then
+        echo -e "  ${RED}❌ Could not install '${AUDIO_PKG}'. Notification sounds will be silent.${NC}"
+    elif command -v paplay &>/dev/null || command -v pw-play &>/dev/null; then
         echo -e "  ${GREEN}✅ Audio playback installed!${NC}"
         INSTALLED=$((INSTALLED + 1))
     else
-        echo -e "  ${RED}⚠️  Could not install audio playback. Notification sounds will be silent.${NC}"
+        echo -e "  ${RED}⚠️  Installed, but neither paplay nor pw-play is on PATH. Notification sounds will be silent.${NC}"
     fi
 fi
 
@@ -155,12 +185,14 @@ if command -v ffmpeg &>/dev/null; then
     SKIPPED=$((SKIPPED + 1))
 else
     echo -e "  ${YELLOW}📦 Installing ffmpeg${NC}..."
-    $INSTALL_CMD ffmpeg || true
-    if command -v ffmpeg &>/dev/null; then
+    ensure_pkg_lists
+    if ! $INSTALL_CMD ffmpeg; then
+        echo -e "  ${RED}❌ Could not install ffmpeg. Video thumbnails will be unavailable.${NC}"
+    elif command -v ffmpeg &>/dev/null; then
         echo -e "  ${GREEN}✅ ffmpeg installed successfully!${NC}"
         INSTALLED=$((INSTALLED + 1))
     else
-        echo -e "  ${RED}⚠️  Could not install ffmpeg. Video thumbnails will be unavailable.${NC}"
+        echo -e "  ${RED}⚠️  Installed, but ffmpeg is not on PATH yet. Video thumbnails will be unavailable.${NC}"
     fi
 fi
 
