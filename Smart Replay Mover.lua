@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.14.0
+-- Smart Replay Mover v2.15.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.14.0"
+local VERSION = "2.15.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,12 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.15.0:
+--   - NEW: {type} folder template token, so Replays, Recordings and Screenshots can each
+--         get their own subfolder. "{game}/{type}" gives "Elden Ring/Replays". The token
+--         works anywhere in the template, so "{type}/{game}" and "{game}/{year}/{type}"
+--         are equally valid (Issue #35, thanks @NKrN2)
+
 -- CHANGELOG v2.14.0:
 --   - FIX: A failed FFmpeg run no longer costs you the recording. The script waited for
 --         FFmpeg but never read its exit code, so a half-finished file larger than 90% of
@@ -4094,10 +4100,20 @@ local function clean_folder_path(str)
     return str
 end
 
+-- Values for the {type} token; the folder names live here only.
+local MEDIA = {
+    REPLAY = "Replays",
+    RECORDING = "Recordings",
+    SCREENSHOT = "Screenshots",
+}
+
 -- Expand {token} placeholders (case-insensitive).
-local function apply_folder_template(template, game)
+-- An unknown media type resolves {type} to "", and sanitize_relative_path then
+-- drops the empty segment, so the file lands in the game folder as before.
+local function apply_folder_template(template, game, media_type)
     local t = {
         game = game or "",
+        type = media_type or "",
         year = os.date("%Y"), month = os.date("%m"), day = os.date("%d"),
         date = os.date("%Y-%m-%d"), yearmonth = os.date("%Y-%m"),
         hour = os.date("%H"), min = os.date("%M"),
@@ -5263,7 +5279,7 @@ local function uniquify_path(path)
     return ok and result or path
 end
 
-local function move_file(src, folder_name, game_name)
+local function move_file(src, folder_name, game_name, media_type)
     local ok, result = pcall(function()
         src = string.gsub(src, "\\", "/")
 
@@ -5328,7 +5344,7 @@ local function move_file(src, folder_name, game_name)
         -- Build the destination from the folder template; {game} is the detected folder.
         local template = (CONFIG.folder_template ~= nil and CONFIG.folder_template ~= "")
                          and CONFIG.folder_template or "{game}"
-        local rel = sanitize_relative_path(apply_folder_template(template, real_folder))
+        local rel = sanitize_relative_path(apply_folder_template(template, real_folder, media_type))
         if rel == "" then rel = real_folder end
         local target_dir = dir .. "/" .. rel
 
@@ -5469,7 +5485,7 @@ local function get_recording_path()
     return path
 end
 
-local function process_file(path)
+local function process_file(path, media_type)
     if not path or path == "" then
         log("ERROR: No file path provided")
         return false
@@ -5484,21 +5500,21 @@ local function process_file(path)
         log("No game detected, using: " .. folder_name)
     end
 
-    return move_file(path, folder_name, folder_name)
+    return move_file(path, folder_name, folder_name, media_type)
 end
 
-local function process_file_with_game(path, folder_name, game_name)
+local function process_file_with_game(path, folder_name, game_name, media_type)
     if not path or path == "" then
         log("ERROR: No file path provided")
         return false
     end
 
     if not folder_name then
-        return process_file(path)
+        return process_file(path, media_type)
     end
 
     log("Game folder: " .. folder_name)
-    return move_file(path, folder_name, game_name or folder_name)
+    return move_file(path, folder_name, game_name or folder_name, media_type)
 end
 
 -- ============================================================================
@@ -5515,7 +5531,7 @@ local function process_move_queue()
         local now = now_ms()
 
         local function try_flush(job, candidate)
-            if process_file_with_game(candidate, job.folder_name, job.raw_game) then
+            if process_file_with_game(candidate, job.folder_name, job.raw_game, job.media_type) then
                 STATE.last_flushed_path = job.path
                 STATE.last_flushed_time = os.time()
                 notify("Clip Saved", "Moved to: " .. job.folder_name)
@@ -5647,7 +5663,7 @@ local function on_recording_file_changed(calldata)
                     obs.timer_remove(move_split_segment)
                     if obs.os_file_exists(file_to_move) then
                         log("Moving split segment: " .. file_to_move)
-                        process_file_with_game(file_to_move, folder, game)
+                        process_file_with_game(file_to_move, folder, game, MEDIA.RECORDING)
                     else
                         dbg("Split segment file not found (may have been moved by polling): " .. file_to_move)
                     end
@@ -5729,7 +5745,7 @@ local function check_split_files()
             if current_file and current_file ~= "" and current_file ~= current_recording_file then
                 if current_recording_file and obs.os_file_exists(current_recording_file) then
                     log("Split detected: moving previous segment")
-                    process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name)
+                    process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING)
                 end
                 current_recording_file = current_file
                 dbg("Now recording to: " .. current_file)
@@ -5939,6 +5955,7 @@ local function on_event(event)
                     trimmed_path = STATE.rbp_active and make_trimmed_path(path) or nil,
                     folder_name = folder_name,
                     raw_game = raw_game,
+                    media_type = MEDIA.REPLAY,
                     created_at = t,
                     deadline = t + 120000,
                     hard_deadline = t + 1800000,
@@ -6001,7 +6018,7 @@ local function on_event(event)
                         STATE.last_detection_time = now
                     end
 
-                    process_file_with_game(path, folder_name, raw_game)
+                    process_file_with_game(path, folder_name, raw_game, MEDIA.SCREENSHOT)
 
                     -- Throttle notifications (0.5s) to prevent UI overload
                     if now - STATE.last_screenshot_notify_time > 0.5 then
@@ -6069,9 +6086,9 @@ local function on_event(event)
                     if path then
                         log("Recording stopped - organizing file")
                         if STATE.recording_folder_name then
-                            process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name)
+                            process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING)
                         else
-                            process_file(path)
+                            process_file(path, MEDIA.RECORDING)
                         end
 
                         notify("Recording Saved", "Moved to: " .. saved_folder)
@@ -6735,7 +6752,7 @@ function script_properties()
     local template_group = obs.obs_properties_create()
     obs.obs_properties_add_text(template_group, "folder_template", "🧩  Folder template", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_text(template_group, "folder_template_help",
-        "Tokens: {game} {year} {month} {day} {date} {yearmonth} {hour} {min}. Combine them with any separator; / makes a subfolder. E.g. {game}/{hour} - {min}. See README.",
+        "Tokens: {game} {type} {year} {month} {day} {date} {yearmonth} {hour} {min}. {type} is Replays, Recordings or Screenshots. ONLY / creates a subfolder: {game}/{type} gives two folders, {game}-{type} gives one folder called \"Elden Ring-Replays\". See README.",
         obs.OBS_TEXT_INFO)
     -- Show the legacy controls only while the old flag is set.
     if CONFIG.use_date_subfolders then
@@ -7073,7 +7090,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.14.0
+-- END OF SCRIPT v2.15.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================

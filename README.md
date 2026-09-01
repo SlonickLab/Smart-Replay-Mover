@@ -74,7 +74,7 @@
 
 - **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
 - **Case-Insensitive** — Won't create duplicate folders with different cases
-- **🧩 Folder Templates** — Organize into any structure with `{game}`, `{yearmonth}`, `{date}` and more tokens
+- **🧩 Folder Templates** — Organize into any structure with `{game}`, `{type}`, `{yearmonth}`, `{date}` and more tokens
 - **230+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
 - **⚡ Smart Save Hotkey** — Instant "Saving..." notification when pressing your custom hotkey
 - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root
@@ -210,6 +210,7 @@
   | Token | Expands to |
   |-------|------------|
   | `{game}` | Detected game folder (e.g. `Counter-Strike 2`) |
+  | `{type}` | `Replays`, `Recordings` or `Screenshots` |
   | `{year}` `{month}` `{day}` | `2026` / `07` / `23` |
   | `{date}` | `2026-07-23` |
   | `{yearmonth}` | `2026-07` (the old monthly-subfolder format) |
@@ -220,7 +221,8 @@
   | Template | Result |
   |----------|--------|
   | `{game}` | `Counter-Strike 2/` |
-  | `{game}/Replays` | `Counter-Strike 2/Replays/` |
+  | `{game}/{type}` | `Counter-Strike 2/Replays/`, `Counter-Strike 2/Screenshots/` |
+  | `{type}/{game}` | `Replays/Counter-Strike 2/` |
   | `{game}/{yearmonth}` | `Counter-Strike 2/2026-07/` |
   | `{yearmonth}/{game}` | `2026-07/Counter-Strike 2/` |
   | `{game}/{year} - {hour} - {min}` | `Counter-Strike 2/2026 - 18 - 53/` |
@@ -228,6 +230,8 @@
   Combine tokens in one folder with any separator you like. Only `/` starts a new subfolder, so `{hour} - {min}` becomes `18 - 53` and `{game}/{year} - {hour} - {min}` becomes `Counter-Strike 2/2026 - 18 - 53/`.
 
   The template is always resolved **relative to the OBS output folder** — every segment is sanitized, so an absolute path, a drive letter, or `..` can never send a clip outside it. Unknown tokens are left as-is, so a typo is visible instead of silently dropped.
+
+  > 💡 `{type}` is what keeps replays, recordings and screenshots apart inside one game folder. With `{game}/{type}` a saved replay lands in `Counter-Strike 2/Replays`, a recording in `Counter-Strike 2/Recordings`, and a screenshot in `Counter-Strike 2/Screenshots`. Leave it out and nothing changes.
 
   > 💡 Upgrading from the old **Monthly subfolders** checkbox? A one-time **Migrate** button appears here and folds it into your template as `{game}/{yearmonth}` — your existing layout is preserved.
 
@@ -405,6 +409,12 @@
   │   └── 2025-06/                    ← From a {yearmonth} template
   │       └── Minecraft - 2025-06-18 11-22-33.mp4
   │
+  ├── 📁 Elden Ring/                  ← From a {game}/{type} template
+  │   ├── 📁 Replays/
+  │   │   └── Elden Ring - 2025-06-19 21-05-40.mp4
+  │   ├── 📁 Recordings/
+  │   └── 📁 Screenshots/
+  │
   └── 📁 Desktop/                     ← Fallback folder
       └── Desktop - 2025-06-17 09-00-00.mp4
   ```
@@ -532,6 +542,10 @@
   ---
 
 ## 📋 Changelog
+
+### v2.15.0 — 🗂️ Separate Folders per Media Type
+
+- **🗂️ New `{type}` template token.** Replays, recordings and screenshots can each get their own subfolder inside the game folder. `{game}/{type}` gives `Elden Ring/Replays`, `Elden Ring/Recordings` and `Elden Ring/Screenshots`. The token works anywhere in the template, so `{type}/{game}` and `{game}/{year}/{type}` are equally valid. A template without `{type}` behaves exactly as before. ([Issue #35](https://github.com/SlonickLab/Smart-Replay-Mover/issues/35), thanks @NKrN2)
 
 ### v2.14.0 — 🖼️ Safer Thumbnails
 
