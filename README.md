@@ -550,6 +550,7 @@
 ### v2.16.0 — 🎞️ Grouped Split Recordings
 
 - **🎞️ Group split recordings into a session folder.** When OBS splits a long recording, the parts used to sit next to each other in the game folder, told apart only by their timestamps. A new **Group split recordings** option puts each recording's parts into their own folder named after the session start time, numbered `Part 01`, `Part 02`, and so on. It works with any folder template, and recordings that were never split are left exactly as before. The game name in the filename still follows your existing **Add game prefix** setting. ([Issue #36](https://github.com/SlonickLab/Smart-Replay-Mover/issues/36), thanks @emoeckel)
+- **📅 Monthly subfolders migrate themselves.** The old *Monthly subfolders* checkbox is folded into your folder template as `{game}/{yearmonth}` the first time the script loads, instead of waiting for you to find the **Migrate** button. Anyone who upgraded from an older version and never opened the settings was still running on the old flag. The folders it produces are exactly the same as before.
 
 ### v2.15.0 — 🗂️ Separate Folders per Media Type
 

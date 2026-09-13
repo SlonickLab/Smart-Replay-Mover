@@ -39,6 +39,10 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 --         were never split are untouched, and the game prefix still follows the existing
 --         "Add game prefix" setting, so the game name survives templates without {game}
 --         (Issue #36, thanks @emoeckel)
+--   - CHANGE: The legacy "Monthly subfolders" flag is now folded into the folder
+--         template automatically on load, as "{game}/{yearmonth}". It previously waited
+--         for the Migrate button, so anyone who upgraded without opening the settings
+--         was still running on the old flag. The resulting paths are identical
 --   - Removed an unused split_files table left over from the pre-2.10.0 split handling
 
 -- CHANGELOG v2.15.0:
@@ -6806,7 +6810,9 @@ function script_properties()
     obs.obs_properties_add_text(template_group, "folder_template_help",
         "Tokens: {game} {type} {year} {month} {day} {date} {yearmonth} {hour} {min}. {type} is Replays, Recordings or Screenshots. ONLY / creates a subfolder: {game}/{type} gives two folders, {game}-{type} gives one folder called \"Elden Ring-Replays\". See README.",
         obs.OBS_TEXT_INFO)
-    -- Show the legacy controls only while the old flag is set.
+    -- Show the legacy controls only while the old flag is set. script_load migrates
+    -- automatically now, so this is a fallback for the case where that did not run.
+    -- Keep it until use_date_subfolders itself is removed.
     if CONFIG.use_date_subfolders then
         obs.obs_properties_add_bool(template_group, "use_date_subfolders", "📅  Monthly subfolders (legacy)")
         obs.obs_properties_add_text(template_group, "migrate_info",
@@ -7029,6 +7035,11 @@ function script_load(settings)
     STATE.startup_update_check_done = false
 
     destroy_orphaned_notifications()
+
+    -- Fold the legacy monthly-subfolders flag into the folder template automatically.
+    -- It used to happen only when the user found and clicked the Migrate button, so
+    -- anyone who upgraded and never opened the settings was still relying on the old flag.
+    migrate_legacy_date_setting(settings)
 
     read_config(settings)
     evaluate_rbp_mode()
