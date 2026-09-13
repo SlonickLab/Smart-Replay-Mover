@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.15.0
+-- Smart Replay Mover v2.16.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.15.0"
+local VERSION = "2.16.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,15 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.16.0:
+--   - NEW: "Group split recordings into a session folder". When OBS splits a recording, the
+--         parts go into their own folder named after the session start time and are numbered
+--         "Part 01", "Part 02" instead of each carrying its own timestamp. Recordings that
+--         were never split are untouched, and the game prefix still follows the existing
+--         "Add game prefix" setting, so the game name survives templates without {game}
+--         (Issue #36, thanks @emoeckel)
+--   - Removed an unused split_files table left over from the pre-2.10.0 split handling
+
 -- CHANGELOG v2.15.0:
 --   - NEW: {type} folder template token, so Replays, Recordings and Screenshots can each
 --         get their own subfolder. "{game}/{type}" gives "Elden Ring/Replays". The token
@@ -310,6 +319,7 @@ local CONFIG = {
     add_game_prefix = true,
     organize_screenshots = true,
     organize_recordings = true,
+    group_split_recordings = false,
     use_date_subfolders = false,  -- legacy; replaced by folder_template
     folder_template = "{game}",
     fallback_folder = "Desktop",
@@ -2949,6 +2959,8 @@ local STATE = {
     recording_output_ref = nil,
     recording_game_name = nil,
     recording_folder_name = nil,
+    recording_session_stamp = nil,
+    recording_split_index = 0,
 
     -- Notification handles / fonts (GDI)
     notification_hwnd = nil,
@@ -5279,7 +5291,7 @@ local function uniquify_path(path)
     return ok and result or path
 end
 
-local function move_file(src, folder_name, game_name, media_type)
+local function move_file(src, folder_name, game_name, media_type, split_info)
     local ok, result = pcall(function()
         src = string.gsub(src, "\\", "/")
 
@@ -5353,7 +5365,20 @@ local function move_file(src, folder_name, game_name, media_type)
             target_dir = target_dir .. "/" .. os.date("%Y-%m")
         end
 
-        local new_filename = filename
+        -- Split recordings: one folder per session, parts numbered inside it. The
+        -- game prefix below is deliberately left to add_game_prefix, so the game name
+        -- survives templates that do not contain {game}.
+        local base_name = filename
+        if split_info and CONFIG.group_split_recordings and split_info.stamp then
+            local split_ext = string.match(filename, "%.([^.]+)$")
+            if split_ext then
+                base_name = string.format("Part %02d.%s", split_info.index, split_ext)
+                target_dir = target_dir .. "/" .. split_info.stamp
+                dbg("Split session folder: " .. split_info.stamp .. " -> " .. base_name)
+            end
+        end
+
+        local new_filename = base_name
         local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and game_name ~= CONFIG.fallback_folder
 
         dbg("Prefix check: add_game_prefix=" .. tostring(CONFIG.add_game_prefix) ..
@@ -5370,7 +5395,7 @@ local function move_file(src, folder_name, game_name, media_type)
                 dbg("Nested path detected, using last segment for prefix: " .. prefix_source)
             end
             local safe_game = clean_filename(prefix_source)
-            new_filename = safe_game .. " - " .. filename
+            new_filename = safe_game .. " - " .. base_name
             dbg("Added prefix: " .. new_filename)
         end
 
@@ -5485,7 +5510,7 @@ local function get_recording_path()
     return path
 end
 
-local function process_file(path, media_type)
+local function process_file(path, media_type, split_info)
     if not path or path == "" then
         log("ERROR: No file path provided")
         return false
@@ -5500,21 +5525,21 @@ local function process_file(path, media_type)
         log("No game detected, using: " .. folder_name)
     end
 
-    return move_file(path, folder_name, folder_name, media_type)
+    return move_file(path, folder_name, folder_name, media_type, split_info)
 end
 
-local function process_file_with_game(path, folder_name, game_name, media_type)
+local function process_file_with_game(path, folder_name, game_name, media_type, split_info)
     if not path or path == "" then
         log("ERROR: No file path provided")
         return false
     end
 
     if not folder_name then
-        return process_file(path, media_type)
+        return process_file(path, media_type, split_info)
     end
 
     log("Game folder: " .. folder_name)
-    return move_file(path, folder_name, game_name or folder_name, media_type)
+    return move_file(path, folder_name, game_name or folder_name, media_type, split_info)
 end
 
 -- ============================================================================
@@ -5617,9 +5642,8 @@ end
 -- RECORDING SIGNAL HANDLERS & SPLIT FILE TRACKING
 -- ============================================================================
 
--- IMPORTANT: These must be declared BEFORE on_recording_file_changed()
+-- IMPORTANT: This must be declared BEFORE on_recording_file_changed()
 -- so the function captures the local upvalue, not a global with the same name.
-local split_files = {}
 local current_recording_file = nil
 
 local function on_recording_file_changed(calldata)
@@ -5658,12 +5682,21 @@ local function on_recording_file_changed(calldata)
                 local folder = STATE.recording_folder_name
                 local game = STATE.recording_game_name
 
+                -- Count the boundary here, not inside the timer: RECORDING_STOPPED moves
+                -- the final segment synchronously, so a stop within 300ms of a split would
+                -- otherwise hand the same number to two files.
+                STATE.recording_split_index = (STATE.recording_split_index or 0) + 1
+                local split = {
+                    index = STATE.recording_split_index,
+                    stamp = STATE.recording_session_stamp,
+                }
+
                 -- Delay move by 300ms to ensure OBS has fully released the file handle
                 local function move_split_segment()
                     obs.timer_remove(move_split_segment)
                     if obs.os_file_exists(file_to_move) then
-                        log("Moving split segment: " .. file_to_move)
-                        process_file_with_game(file_to_move, folder, game, MEDIA.RECORDING)
+                        log("Moving split segment " .. split.index .. ": " .. file_to_move)
+                        process_file_with_game(file_to_move, folder, game, MEDIA.RECORDING, split)
                     else
                         dbg("Split segment file not found (may have been moved by polling): " .. file_to_move)
                     end
@@ -5744,8 +5777,12 @@ local function check_split_files()
             local current_file = obs.calldata_string(cd, "path")
             if current_file and current_file ~= "" and current_file ~= current_recording_file then
                 if current_recording_file and obs.os_file_exists(current_recording_file) then
-                    log("Split detected: moving previous segment")
-                    process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING)
+                    STATE.recording_split_index = (STATE.recording_split_index or 0) + 1
+                    log("Split detected: moving previous segment " .. STATE.recording_split_index)
+                    process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, {
+                        index = STATE.recording_split_index,
+                        stamp = STATE.recording_session_stamp,
+                    })
                 end
                 current_recording_file = current_file
                 dbg("Now recording to: " .. current_file)
@@ -6036,6 +6073,8 @@ local function on_event(event)
                 local raw_game, window_title, skip_fallback = detect_game()
                 STATE.recording_game_name = raw_game
                 STATE.recording_folder_name = get_game_folder(raw_game, window_title, skip_fallback)
+                STATE.recording_session_stamp = os.date("%Y-%m-%d %H-%M-%S")
+                STATE.recording_split_index = 0
                 current_recording_file = nil
 
                 if raw_game then
@@ -6083,12 +6122,22 @@ local function on_event(event)
 
                     local saved_folder = STATE.recording_folder_name or CONFIG.fallback_folder
 
+                    -- A zero counter means OBS never split this recording, so the final
+                    -- file keeps its normal name and no session folder is created.
+                    local split = nil
+                    if (STATE.recording_split_index or 0) > 0 then
+                        split = {
+                            index = STATE.recording_split_index + 1,
+                            stamp = STATE.recording_session_stamp,
+                        }
+                    end
+
                     if path then
                         log("Recording stopped - organizing file")
                         if STATE.recording_folder_name then
-                            process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING)
+                            process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, split)
                         else
-                            process_file(path, MEDIA.RECORDING)
+                            process_file(path, MEDIA.RECORDING, split)
                         end
 
                         notify("Recording Saved", "Moved to: " .. saved_folder)
@@ -6099,6 +6148,8 @@ local function on_event(event)
 
                 STATE.recording_game_name = nil
                 STATE.recording_folder_name = nil
+                STATE.recording_session_stamp = nil
+                STATE.recording_split_index = 0
                 current_recording_file = nil
             end
         end
@@ -6380,6 +6431,7 @@ local function read_config(settings)
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
     CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")
+    CONFIG.group_split_recordings = obs.obs_data_get_bool(settings, "group_split_recordings")
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
     CONFIG.folder_template = obs.obs_data_get_string(settings, "folder_template")
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
@@ -6769,6 +6821,10 @@ function script_properties()
     local folder_group = obs.obs_properties_create()
     obs.obs_properties_add_bool(folder_group, "organize_screenshots", "📸  Also organize screenshots")
     obs.obs_properties_add_bool(folder_group, "organize_recordings", "🎬  Organize recordings (Start/Stop Recording)")
+    obs.obs_properties_add_bool(folder_group, "group_split_recordings", "🗂️  Group split recordings into a session folder")
+    obs.obs_properties_add_text(folder_group, "group_split_help",
+        "Only affects recordings that OBS actually split. Each session gets its own folder named after its start time, and the parts inside are numbered Part 01, Part 02. Unsplit recordings are untouched.",
+        obs.OBS_TEXT_INFO)
     obs.obs_properties_add_bool(folder_group, "scan_all_processes", "🔍  Detect game by scanning all running processes")
     obs.obs_properties_add_text(folder_group, "scan_all_processes_help", "Detects background games when focused on Discord or Desktop (acts as a smart fallback).", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "folder_section", "🗂️  ORGANIZATION", obs.OBS_GROUP_NORMAL, folder_group)
@@ -6893,6 +6949,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "add_game_prefix", true)
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
     obs.obs_data_set_default_bool(settings, "organize_recordings", true)
+    obs.obs_data_set_default_bool(settings, "group_split_recordings", false)
     obs.obs_data_set_default_bool(settings, "use_date_subfolders", false)
     obs.obs_data_set_default_string(settings, "folder_template", "{game}")
     obs.obs_data_set_default_string(settings, "fallback_folder", "Desktop")
@@ -7081,16 +7138,17 @@ function script_unload()
 
     cleanup_notifications()
 
-    split_files = {}
     current_recording_file = nil
     STATE.recording_game_name = nil
     STATE.recording_folder_name = nil
+    STATE.recording_session_stamp = nil
+    STATE.recording_split_index = 0
 
     log("Session: " .. STATE.files_moved .. " moved, " .. STATE.files_skipped .. " skipped")
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.15.0
+-- END OF SCRIPT v2.16.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================

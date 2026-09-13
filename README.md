@@ -241,6 +241,7 @@
   |---------|-------------|
   | Organize screenshots | Also sort screenshots |
   | Organize recordings | Sort regular recordings (not just replays) |
+  | Group split recordings | Put the parts of a split recording in their own session folder, numbered `Part 01`, `Part 02` |
   | Scan all processes | Detect background games when alt-tabbed (Windows only) |
 
 ### 🛡️ Spam Protection
@@ -413,6 +414,9 @@
   │   ├── 📁 Replays/
   │   │   └── Elden Ring - 2025-06-19 21-05-40.mp4
   │   ├── 📁 Recordings/
+  │   │   └── 📁 2025-06-19 21-30-00/  ← One split recording, grouped
+  │   │       ├── Elden Ring - Part 01.mp4
+  │   │       └── Elden Ring - Part 02.mp4
   │   └── 📁 Screenshots/
   │
   └── 📁 Desktop/                     ← Fallback folder
@@ -542,6 +546,10 @@
   ---
 
 ## 📋 Changelog
+
+### v2.16.0 — 🎞️ Grouped Split Recordings
+
+- **🎞️ Group split recordings into a session folder.** When OBS splits a long recording, the parts used to sit next to each other in the game folder, told apart only by their timestamps. A new **Group split recordings** option puts each recording's parts into their own folder named after the session start time, numbered `Part 01`, `Part 02`, and so on. It works with any folder template, and recordings that were never split are left exactly as before. The game name in the filename still follows your existing **Add game prefix** setting. ([Issue #36](https://github.com/SlonickLab/Smart-Replay-Mover/issues/36), thanks @emoeckel)
 
 ### v2.15.0 — 🗂️ Separate Folders per Media Type
 
