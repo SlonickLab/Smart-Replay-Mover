@@ -347,6 +347,8 @@ end)()
 local CONFIG = {
     os_mode = "auto",
     add_game_prefix = true,
+    game_name_position = "before",
+    game_name_separator = " - ",
     organize_screenshots = true,
     organize_recordings = true,
     group_split_recordings = false,
@@ -5307,6 +5309,18 @@ local function make_trimmed_path(path)
     return stem .. "_trimmed" .. ext
 end
 
+-- "Replay.mkv" + "Game" -> "Game - Replay.mkv", or "Replay - Game.mkv" when the game
+-- goes after the name (before the extension).
+local function add_game_name(filename, game)
+    local sep = CONFIG.game_name_separator or " - "
+    if CONFIG.game_name_position == "after" then
+        local stem, ext = string.match(filename, "^(.+)(%.[^./\\]+)$")
+        if stem then return stem .. sep .. game .. ext end
+        return filename .. sep .. game
+    end
+    return game .. sep .. filename
+end
+
 -- "clip.mp4" -> "clip (2).mp4" when the target already exists.
 -- os_rename on Windows is MoveFileExW(REPLACE_EXISTING): without this check a
 -- name collision would silently OVERWRITE the existing file.
@@ -5360,7 +5374,7 @@ local function move_file(src, folder_name, game_name, media_type, split_info)
             local should_add_prefix = CONFIG.add_game_prefix and game_name and game_name ~= "" and (game_name ~= "." and game_name ~= "/" and game_name ~= "\\") and game_name ~= CONFIG.fallback_folder
             if should_add_prefix then
                 local safe_game = clean_filename(game_name)
-                new_filename = safe_game .. " - " .. filename
+                new_filename = add_game_name(filename, safe_game)
                 dbg("No-folder mode: added prefix -> " .. new_filename)
             end
             local target_path = dir .. "/" .. new_filename
@@ -5431,7 +5445,7 @@ local function move_file(src, folder_name, game_name, media_type, split_info)
                 dbg("Nested path detected, using last segment for prefix: " .. prefix_source)
             end
             local safe_game = clean_filename(prefix_source)
-            new_filename = safe_game .. " - " .. base_name
+            new_filename = add_game_name(base_name, safe_game)
             dbg("Added prefix: " .. new_filename)
         end
 
@@ -6494,6 +6508,11 @@ local function read_config(settings)
     STATE.script_settings = settings
 
     CONFIG.add_game_prefix = obs.obs_data_get_bool(settings, "add_game_prefix")
+    CONFIG.game_name_position = obs.obs_data_get_string(settings, "game_name_position") == "after"
+                                and "after" or "before"
+    -- Not clean_filename: it trims, while " " and "" are valid separators here.
+    local separator = string.gsub(obs.obs_data_get_string(settings, "game_name_separator"), '[%c<>:"/\\|?*]', "")
+    CONFIG.game_name_separator = utf8_truncate(separator, 8)
     CONFIG.organize_screenshots = obs.obs_data_get_bool(settings, "organize_screenshots")
     CONFIG.organize_recordings = obs.obs_data_get_bool(settings, "organize_recordings")
     CONFIG.group_split_recordings = obs.obs_data_get_bool(settings, "group_split_recordings")
@@ -6712,7 +6731,12 @@ function script_properties()
 
     -- FILE NAMING GROUP
     local naming_group = obs.obs_properties_create()
-    obs.obs_properties_add_bool(naming_group, "add_game_prefix", "✏️  Add game name prefix to filename")
+    obs.obs_properties_add_bool(naming_group, "add_game_prefix", "✏️  Add game name to filename")
+    local p_name_pos = obs.obs_properties_add_list(naming_group, "game_name_position", "↔️  Game name position", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    obs.obs_property_list_add_string(p_name_pos, "Before the file name", "before")
+    obs.obs_property_list_add_string(p_name_pos, "After the file name", "after")
+    obs.obs_properties_add_text(naming_group, "game_name_separator", "🔗  Separator", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(naming_group, "game_name_separator_help", "Text between the game name and the file name. Default is \" - \". Use _ or a space, or leave it empty.", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_text(naming_group, "fallback_folder", "📂  Fallback folder name", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_group(props, "naming_section", "📁  FILE NAMING", obs.OBS_GROUP_NORMAL, naming_group)
 
@@ -6905,6 +6929,8 @@ end
 function script_defaults(settings)
     obs.obs_data_set_default_string(settings, "os_mode", "auto")
     obs.obs_data_set_default_bool(settings, "add_game_prefix", true)
+    obs.obs_data_set_default_string(settings, "game_name_position", "before")
+    obs.obs_data_set_default_string(settings, "game_name_separator", " - ")
     obs.obs_data_set_default_bool(settings, "organize_screenshots", true)
     obs.obs_data_set_default_bool(settings, "organize_recordings", true)
     obs.obs_data_set_default_bool(settings, "group_split_recordings", false)
