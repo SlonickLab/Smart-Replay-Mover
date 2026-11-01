@@ -377,6 +377,7 @@ local CONFIG = {
     auto_start_buffer = false,
     -- Process scan detection
     scan_all_processes = false,
+    app_name_folders = false,
     -- Replay Buffer Pro compatibility
     rbp_mode = "auto",
     strip_trimmed_suffix = true,
@@ -2782,6 +2783,25 @@ local IGNORE_LIST = {
 local IGNORE_SET = {}
 for _, v in ipairs(IGNORE_LIST) do IGNORE_SET[v] = true end
 
+-- Never a folder of their own, even with app-name folders on: OBS itself, the Windows
+-- shell, Game Bar, overlays and console hosts are not what the user was looking at.
+do
+    local core = {}
+    for _, v in ipairs({
+        "obs64", "obs32", "obs",
+        "explorer", "searchapp", "lockapp", "applicationframehost", "shellexperiencehost",
+        "textinputhost", "dwm", "startmenuexperiencehost", "runtimebroker", "sihost",
+        "ctfmon", "dllhost", "smartscreen", "securityhealthsystray", "widgets",
+        "gamebarui", "gamebar", "xboxgamebar", "gamingservices", "gamingservicesnet",
+        "nvidia share", "nvcontainer", "nvspcaps", "nvdisplay.container",
+        "overwolf", "medal", "playstv", "raptr", "eosoverlayrenderer", "eosoverlay", "igoproxy",
+        "conhost", "cmd",
+    }) do core[v] = true end
+    function is_core_ignored(name)
+        return name == nil or name == "" or core[string.lower(name)] == true
+    end
+end
+
 
 -- ============================================================================
 -- CUSTOM NAMES (User-defined mappings from GUI)
@@ -4276,7 +4296,8 @@ end
 -- GET GAME FOLDER (Main detection logic with priorities)
 -- ============================================================================
 
-local function get_game_folder(raw_name, window_title, skip_window_fallback)
+-- source is detect_game's 4th value: "focused", "app" or nil.
+local function get_game_folder(raw_name, window_title, skip_window_fallback, source)
     -- ═══════════════════════════════════════════════════════════════
     -- PRIORITY 1: Custom names (ABSOLUTE - user-defined ALWAYS wins!)
     -- This is the HIGHEST priority - users can override ANY detection
@@ -4289,6 +4310,12 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback)
 
     -- If process name available, try to match it
     if raw_name and raw_name ~= "" then
+        -- A non-game app named after itself skips the game tables: their substring
+        -- patterns would turn "code" (VS Code) into "Call of Duty".
+        if source == "app" then
+            return clean_filename(raw_name)
+        end
+
         local lower = string.lower(raw_name)
 
         -- ═══════════════════════════════════════════════════════════════
@@ -4667,19 +4694,34 @@ local function get_background_game()
     return ok and result or nil
 end
 
+-- An exact custom rule for an ignored app means the user wants that app organized.
+local function is_ignored_without_rule(name)
+    return is_ignored(name) and not CUSTOM_NAMES_EXACT[string.lower(name)]
+end
+
 -- Detect active game
--- Returns: process_or_game_name, window_title, skip_window_fallback
+-- Returns: process_or_game_name, window_title, skip_window_fallback, source
+-- source is "focused" when the name is the focused process, "app" for a non-game app
+-- named after itself, nil otherwise.
 local function detect_game()
     if not WINDOWS_FFI_AVAILABLE then
         local linux_process, linux_title = get_active_linux_window_info()
-        if linux_process and is_ignored(linux_process) then return nil, linux_title, true end
+        if linux_process and is_ignored_without_rule(linux_process) then
+            if CONFIG.app_name_folders and not is_core_ignored(linux_process) then
+                -- As on Windows, a game that OBS is capturing wins over the app in focus.
+                local obs_game, obs_window = find_game_in_obs()
+                if obs_game and not is_ignored(obs_game) then return obs_game, obs_window, false end
+                return linux_process, linux_title, false, "app"
+            end
+            return nil, linux_title, true
+        end
         -- Proton/Steam wrapper: the process is a generic steam_app_<AppID>, so the real
         -- game name lives in the window title (KWin caption / _NET_WM_NAME).
         if is_generic_steam_app_identifier(linux_process) and linux_title and linux_title ~= "" then
             dbg("Generic Steam AppID '" .. tostring(linux_process) .. "' -> using window title: " .. linux_title)
             return linux_title, linux_title, false
         end
-        if linux_process or linux_title then return linux_process, linux_title, false end
+        if linux_process or linux_title then return linux_process, linux_title, false, "focused" end
         
         local obs_game, obs_window = find_game_in_obs()
         if obs_game and not is_ignored(obs_game) then return obs_game, obs_window, false end
@@ -4692,7 +4734,7 @@ local function detect_game()
     local window_title_for_matching = title
     local active_ignored = false
 
-    if process and is_ignored(process) then
+    if process and is_ignored_without_rule(process) then
         active_ignored = true
     end
 
@@ -4705,7 +4747,7 @@ local function detect_game()
     end
 
     if process and not active_ignored then
-        return process, window_title_for_matching, false
+        return process, window_title_for_matching, false, "focused"
     end
 
     local obs_game = find_game_in_obs()
@@ -4718,7 +4760,12 @@ local function detect_game()
         if bg_game then return bg_game, window_title_for_matching, false end
     end
 
-    if active_ignored then return nil, window_title_for_matching, true end
+    if active_ignored then
+        if CONFIG.app_name_folders and not is_core_ignored(process) then
+            return process, window_title_for_matching, false, "app"
+        end
+        return nil, window_title_for_matching, true
+    end
     return nil, window_title_for_matching, false
 end
 
@@ -5588,8 +5635,8 @@ local function process_file(path, media_type, split_info)
         return false
     end
 
-    local raw_game, window_title, skip_fallback = detect_game()
-    local folder_name = get_game_folder(raw_game, window_title, skip_fallback)
+    local raw_game, window_title, skip_fallback, source = detect_game()
+    local folder_name = get_game_folder(raw_game, window_title, skip_fallback, source)
 
     if raw_game then
         log("Game: " .. raw_game .. " -> " .. folder_name)
@@ -6052,8 +6099,8 @@ local function on_event(event)
             end
 
             if path then
-                local raw_game, window_title, skip_fallback = detect_game()
-                local folder_name = get_game_folder(raw_game, window_title, skip_fallback)
+                local raw_game, window_title, skip_fallback, source = detect_game()
+                local folder_name = get_game_folder(raw_game, window_title, skip_fallback, source)
 
                 -- Deferred move: queue the file instead of moving it right now, so
                 -- Replay Buffer Pro (if present) can finish trimming first. Game is
@@ -6117,8 +6164,8 @@ local function on_event(event)
                         folder_name = STATE.cache_folder_name
                         dbg("Using detection cache for rapid screenshot burst")
                     else
-                        local r, w, s = detect_game()
-                        folder_name = get_game_folder(r, w, s)
+                        local r, w, s, src = detect_game()
+                        folder_name = get_game_folder(r, w, s, src)
                         raw_game = r
 
                         -- Update cache
@@ -6147,9 +6194,9 @@ local function on_event(event)
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTING then
             STATE.chapter_count = 0
             if CONFIG.organize_recordings then
-                local raw_game, window_title, skip_fallback = detect_game()
+                local raw_game, window_title, skip_fallback, source = detect_game()
                 STATE.recording_game_name = raw_game
-                STATE.recording_folder_name = get_game_folder(raw_game, window_title, skip_fallback)
+                STATE.recording_folder_name = get_game_folder(raw_game, window_title, skip_fallback, source)
                 STATE.recording_session_stamp = os.date("%Y-%m-%d %H-%M-%S")
                 STATE.recording_split_index = 0
                 current_recording_file = nil
@@ -6557,6 +6604,7 @@ local function read_config(settings)
     CONFIG.restart_buffer_after_save = obs.obs_data_get_bool(settings, "restart_buffer_after_save")
     CONFIG.auto_start_buffer = obs.obs_data_get_bool(settings, "auto_start_buffer")
     CONFIG.scan_all_processes = obs.obs_data_get_bool(settings, "scan_all_processes")
+    CONFIG.app_name_folders = obs.obs_data_get_bool(settings, "app_name_folders")
     CONFIG.notification_position = obs.obs_data_get_string(settings, "notification_position")
     CONFIG.rbp_mode = obs.obs_data_get_string(settings, "rbp_mode")
     if CONFIG.rbp_mode == "" then CONFIG.rbp_mode = "auto" end
@@ -6826,6 +6874,8 @@ function script_properties()
         obs.OBS_TEXT_INFO)
     obs.obs_properties_add_bool(folder_group, "scan_all_processes", "🔍  Detect game by scanning all running processes")
     obs.obs_properties_add_text(folder_group, "scan_all_processes_help", "Detects background games when focused on Discord or Desktop (acts as a smart fallback).", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_bool(folder_group, "app_name_folders", "🪟  Use the app name instead of the fallback folder")
+    obs.obs_properties_add_text(folder_group, "app_name_folders_help", "Clips taken while Discord, a browser or another non-game app is in focus go to a folder named after that app. OBS, the desktop and overlays still use the fallback folder.", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "folder_section", "🗂️  ORGANIZATION", obs.OBS_GROUP_NORMAL, folder_group)
 
     -- SPAM PROTECTION GROUP
@@ -6976,6 +7026,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "restart_buffer_after_save", false)
     obs.obs_data_set_default_bool(settings, "auto_start_buffer", false)
     obs.obs_data_set_default_bool(settings, "scan_all_processes", false)
+    obs.obs_data_set_default_bool(settings, "app_name_folders", false)
     obs.obs_data_set_default_string(settings, "notification_position", "top_right")
     obs.obs_data_set_default_string(settings, "rbp_mode", "auto")
     obs.obs_data_set_default_bool(settings, "strip_trimmed_suffix", true)
