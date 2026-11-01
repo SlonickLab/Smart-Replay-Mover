@@ -2545,10 +2545,13 @@ local IGNORE_LIST = {
     -- ═══════════════════════════════════════════════════════════════
     -- SYSTEM & WINDOWS
     -- ═══════════════════════════════════════════════════════════════
-    "explorer", "searchapp", "taskmgr", "lockapp", "applicationframehost",
+    "explorer", "searchapp", "searchhost", "taskmgr", "lockapp", "applicationframehost",
     "shellexperiencehost", "systemsettings", "textinputhost", "dwm",
     "nvcplui", "startmenuexperiencehost", "runtimebroker", "sihost",
     "ctfmon", "dllhost", "conhost", "smartscreen", "securityhealthsystray",
+
+    -- Linux desktops (the desktop itself, like explorer on Windows)
+    "plasmashell", "xfdesktop", "nemo-desktop", "gnome-shell",
 
     -- Windows 11 / Xbox
     "widgets", "windowsterminal", "wt", "gamebarui", "gamebar",
@@ -2786,7 +2789,8 @@ do
     local core = {}
     for _, v in ipairs({
         "obs64", "obs32", "obs",
-        "explorer", "searchapp", "lockapp", "applicationframehost", "shellexperiencehost",
+        "explorer", "searchapp", "searchhost", "lockapp", "applicationframehost", "shellexperiencehost",
+        "plasmashell", "xfdesktop", "nemo-desktop", "gnome-shell",
         "textinputhost", "dwm", "startmenuexperiencehost", "runtimebroker", "sihost",
         "ctfmon", "dllhost", "smartscreen", "securityhealthsystray", "widgets",
         "gamebarui", "gamebar", "xboxgamebar", "gamingservices", "gamingservicesnet",
