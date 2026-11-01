@@ -4403,26 +4403,29 @@ local function get_active_process()
         -- Validate PID before proceeding
         if pid[0] == 0 then return nil end
 
-        local process = kernel32.OpenProcess(WIN.PROCESS_QUERY_INFORMATION + WIN.PROCESS_VM_READ, 0, pid[0])
-        if is_invalid_handle(process) then return nil end
-
-        -- Wide (UTF-16) buffer + GetModuleBaseNameW: no code page involved, so
-        -- process names in ANY language come through intact. Nested pcall because
-        -- some anti-cheat systems (Marvel Rivals, Valorant, etc.) can crash here.
         local wbuffer = ffi.new("unsigned short[260]")
-        local get_ok, len = pcall(function()
-            return psapi.GetModuleBaseNameW(process, nil, wbuffer, 260)
-        end)
-        
-        -- Safe close for first attempt
-        kernel32.CloseHandle(process)
 
-        if get_ok and len and len > 0 then
-            -- Safely extract string with explicit length limit
-            if len > 259 then len = 259 end
-            local name = wide_to_utf8(wbuffer, len)
-            if name and name ~= "" then
-                return string.gsub(name, "%.[eE][xX][eE]$", "")
+        -- A game running as administrator refuses this access outright, while the limited
+        -- query below still works for it, so a failed open falls through instead of giving up.
+        local process = kernel32.OpenProcess(WIN.PROCESS_QUERY_INFORMATION + WIN.PROCESS_VM_READ, 0, pid[0])
+        if not is_invalid_handle(process) then
+            -- Wide (UTF-16) buffer + GetModuleBaseNameW: no code page involved, so
+            -- process names in ANY language come through intact. Nested pcall because
+            -- some anti-cheat systems (Marvel Rivals, Valorant, etc.) can crash here.
+            local get_ok, len = pcall(function()
+                return psapi.GetModuleBaseNameW(process, nil, wbuffer, 260)
+            end)
+
+            -- Safe close for first attempt
+            kernel32.CloseHandle(process)
+
+            if get_ok and len and len > 0 then
+                -- Safely extract string with explicit length limit
+                if len > 259 then len = 259 end
+                local name = wide_to_utf8(wbuffer, len)
+                if name and name ~= "" then
+                    return string.gsub(name, "%.[eE][xX][eE]$", "")
+                end
             end
         end
         
