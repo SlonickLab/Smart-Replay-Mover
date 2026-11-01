@@ -390,12 +390,6 @@ local CONFIG = {
 local restarting_buffer_active = false
 
 local GAME_DATABASE = {
-    ["000: dawn of war - dark crusade"] = "Warhammer 40",
-    ["000: dawn of war - game of the year edition"] = "Warhammer 40",
-    ["000: dawn of war - soulstorm"] = "Warhammer 40",
-    ["000: dawn of war iii"] = "Warhammer 40",
-    ["000: inquisitor - martyr"] = "Warhammer 40",
-    ["000: space marine"] = "Warhammer 40",
     ["100orange"] = "100% Orange Juice",
     ["140"] = "140",
     ["1914-1918 series"] = "Verdun",
