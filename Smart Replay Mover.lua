@@ -379,6 +379,8 @@ local CONFIG = {
     scan_all_processes = false,
     app_name_folders = false,
     title_for_unknown = false,
+    -- Popups when the replay buffer or a recording starts or stops
+    status_notifications = false,
     -- Replay Buffer Pro compatibility
     rbp_mode = "auto",
     strip_trimmed_suffix = true,
@@ -3052,6 +3054,9 @@ local STATE = {
     last_replay_path = nil,
     open_replay_hotkey_id = nil,
     open_last_replay_pending = false,
+
+    -- Until this time (ms) a "Replay Buffer On" popup is skipped: the script started it itself
+    buffer_self_start_until = 0,
 
     -- Deferred replay move queue (v2.10.0 - Replay Buffer Pro compatibility)
     pending_moves = {},
@@ -6121,6 +6126,7 @@ local function verify_buffer_started()
     buffer_verify_retries = buffer_verify_retries + 1
     if buffer_verify_retries <= MAX_BUFFER_VERIFY_RETRIES then
         dbg("Auto-restart: Buffer NOT active, retry " .. buffer_verify_retries .. "/" .. MAX_BUFFER_VERIFY_RETRIES)
+        STATE.buffer_self_start_until = now_ms() + 10000
         obs.obs_frontend_replay_buffer_start()
         obs.timer_add(verify_buffer_started, 2000)
     else
@@ -6131,6 +6137,7 @@ end
 
 local function start_buffer_delayed()
     obs.timer_remove(start_buffer_delayed)
+    STATE.buffer_self_start_until = now_ms() + 10000
     obs.obs_frontend_replay_buffer_start()
     dbg("Replay Buffer auto-restarted")
     -- Schedule verification to confirm buffer actually started
@@ -6156,6 +6163,7 @@ buffer_restart_safety_timeout = function()
     -- STOPPED event never fired — force restart as last resort
     restarting_buffer_active = false
     dbg("Auto-restart: Safety timeout — STOPPED event never arrived, forcing restart...")
+    STATE.buffer_self_start_until = now_ms() + 10000
     obs.obs_frontend_replay_buffer_start()
     dbg("Replay Buffer force-restarted (safety)")
     -- Verify it actually started
@@ -6167,6 +6175,7 @@ end
 local function auto_start_buffer_on_load()
     obs.timer_remove(auto_start_buffer_on_load)
     local ok, err = pcall(function()
+        STATE.buffer_self_start_until = now_ms() + 10000
         obs.obs_frontend_replay_buffer_start()
         log("Auto-started Replay Buffer on launch")
         notify("Replay Buffer", "Auto-started on launch")
@@ -6343,6 +6352,10 @@ local function on_event(event)
             end
 
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTED then
+            -- When recordings are organized, delayed_recording_init already shows "Recording Started".
+            if CONFIG.status_notifications and not CONFIG.organize_recordings then
+                notify("Recording Started", "Recording in progress")
+            end
             if CONFIG.organize_recordings then
                 -- SAFETY: Delay initialization by 0.5s to prevent crash in graphics thread
                 -- during high-stress recording startup period
@@ -6356,6 +6369,14 @@ local function on_event(event)
                 obs.timer_remove(buffer_restart_safety_timeout)  -- Cancel safety timeout
                 dbg("Auto-restart: Buffer stop confirmed. Restarting in 500ms...")
                 obs.timer_add(start_buffer_delayed, 500)
+            elseif CONFIG.status_notifications then
+                notify("Replay Buffer Off", "Clips are not being saved")
+            end
+
+        elseif event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_STARTED then
+            -- The script's own restart after a save and its auto-start are not news.
+            if CONFIG.status_notifications and now_ms() >= STATE.buffer_self_start_until then
+                notify("Replay Buffer On", "Ready to save clips")
             end
             
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
@@ -6414,6 +6435,9 @@ local function on_event(event)
                 STATE.recording_session_stamp = nil
                 STATE.recording_split_index = 0
                 current_recording_file = nil
+            elseif CONFIG.status_notifications then
+                -- When recordings are organized, "Recording Saved" already says it stopped.
+                notify("Recording Stopped", "Recording finished")
             end
         end
     end)
@@ -6758,6 +6782,7 @@ local function read_config(settings)
     CONFIG.notification_scale = math.floor(obs.obs_data_get_double(settings, "notification_scale"))
     CONFIG.use_quiet_sound = obs.obs_data_get_bool(settings, "use_quiet_sound")
     CONFIG.single_notification = obs.obs_data_get_bool(settings, "single_notification")
+    CONFIG.status_notifications = obs.obs_data_get_bool(settings, "status_notifications")
     CONFIG.notification_sound = obs.obs_data_get_string(settings, "notification_sound")
     -- One-time migration: fold the old "Use Quiet Sound" checkbox into the sound dropdown.
     if CONFIG.use_quiet_sound and (CONFIG.notification_sound == "" or CONFIG.notification_sound == "default") then
@@ -7069,6 +7094,7 @@ function script_properties()
     obs.obs_properties_add_bool(notify_group, "show_notifications", "🖼️  Show visual popup (Borderless Windowed only)")
     obs.obs_properties_add_bool(notify_group, "play_sound", "🔊  Play notification sound (works in Fullscreen too)")
     obs.obs_properties_add_bool(notify_group, "single_notification", "Single notification (show only \"Saving...\")")
+    obs.obs_properties_add_bool(notify_group, "status_notifications", "📡  Show replay buffer and recording status")
     
     local p_scale = obs.obs_properties_add_float_slider(notify_group, "notification_scale", "📏  Scale %", 100.0, 300.0, 10.0)
     
@@ -7197,6 +7223,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_double(settings, "notification_scale", 100.0)
     obs.obs_data_set_default_bool(settings, "use_quiet_sound", false)
     obs.obs_data_set_default_bool(settings, "single_notification", false)
+    obs.obs_data_set_default_bool(settings, "status_notifications", false)
     obs.obs_data_set_default_string(settings, "notification_sound", "default")
     obs.obs_data_set_default_double(settings, "notification_duration", 3.0)
     obs.obs_data_set_default_bool(settings, "enable_thumbnails", false)
