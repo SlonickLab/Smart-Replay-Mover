@@ -4476,29 +4476,39 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback, sou
             end
         end
 
-        -- Check patterns against window title
+        -- Keys shorter than 4 letters ("tr", "et", "cod") sit inside almost any title, so
+        -- they are skipped here; they still work as process names above.
         for _, pattern in ipairs(GAME_PATTERNS) do
-            if string.find(lower_title, pattern[1], 1, true) then
+            if #pattern[1] >= 4 and string.find(lower_title, pattern[1], 1, true) then
                 dbg("Window title matched GAME_PATTERNS: " .. pattern[2])
                 return pattern[2]
             end
         end
 
-        -- Check exact game names
-        for process, folder in pairs(GAME_NAMES) do
-            if string.find(lower_title, process, 1, true) then
-                dbg("Window title matched GAME_NAMES: " .. folder)
-                return folder
+        -- pairs() order changes between OBS starts, so the first hit is not stable: the
+        -- longest key wins (ties: alphabetical), GAME_NAMES before the database.
+        local function longest_key_in_title(tbl)
+            local best_key, best_folder = nil, nil
+            for process, folder in pairs(tbl) do
+                if #process >= 4 and string.find(lower_title, process, 1, true)
+                   and (not best_key or #process > #best_key or (#process == #best_key and process < best_key)) then
+                    best_key, best_folder = process, folder
+                end
             end
+            return best_key, best_folder
         end
 
-        -- Check database by window title (slower but comprehensive)
+        local key, folder = longest_key_in_title(GAME_NAMES)
+        if key then
+            dbg("Window title matched GAME_NAMES '" .. key .. "': " .. folder)
+            return folder
+        end
+
         if GAME_DATABASE then
-            for process, folder in pairs(GAME_DATABASE) do
-                if string.find(lower_title, process, 1, true) then
-                    dbg("Window title matched GAME_DATABASE: " .. folder)
-                    return folder
-                end
+            key, folder = longest_key_in_title(GAME_DATABASE)
+            if key then
+                dbg("Window title matched GAME_DATABASE '" .. key .. "': " .. folder)
+                return folder
             end
         end
 
