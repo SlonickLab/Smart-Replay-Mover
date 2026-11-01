@@ -3927,6 +3927,13 @@ local function show_notification(title, message)
             STATE.notification_hinstance = kernel32.GetModuleHandleA(nil)
         end
 
+        -- After Reload Scripts the previous copy's window is still alive, and only this thread,
+        -- which created it, can destroy it (script_load runs on another one). Until it is gone
+        -- its class cannot be registered again and the popup would be lost.
+        if STATE.notification_hwnd == nil then
+            destroy_orphaned_notifications()
+        end
+
         if not register_notification_class() then
             dbg("Failed to register notification class, cannot show popup")
             return
