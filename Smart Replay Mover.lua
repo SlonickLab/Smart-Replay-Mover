@@ -354,6 +354,8 @@ local CONFIG = {
     group_split_recordings = false,
     use_date_subfolders = false,  -- legacy; replaced by folder_template
     folder_template = "{game}",
+    -- {type} folder names, keyed by MEDIA value; read_config fills it from the settings
+    media_folder_names = {},
     fallback_folder = "Desktop",
     duplicate_cooldown = 5.0,
     delete_spam_files = true,
@@ -4165,7 +4167,8 @@ local function clean_folder_path(str)
     return str
 end
 
--- Values for the {type} token; the folder names live here only.
+-- Media types. Each value is also the default {type} folder name; the user's own names
+-- are in CONFIG.media_folder_names.
 local MEDIA = {
     REPLAY = "Replays",
     RECORDING = "Recordings",
@@ -4178,7 +4181,7 @@ local MEDIA = {
 local function apply_folder_template(template, game, media_type)
     local t = {
         game = game or "",
-        type = media_type or "",
+        type = CONFIG.media_folder_names[media_type or ""] or media_type or "",
         year = os.date("%Y"), month = os.date("%m"), day = os.date("%d"),
         date = os.date("%Y-%m-%d"), yearmonth = os.date("%Y-%m"),
         hour = os.date("%H"), min = os.date("%M"),
@@ -6518,6 +6521,17 @@ local function read_config(settings)
     CONFIG.group_split_recordings = obs.obs_data_get_bool(settings, "group_split_recordings")
     CONFIG.use_date_subfolders = obs.obs_data_get_bool(settings, "use_date_subfolders")
     CONFIG.folder_template = obs.obs_data_get_string(settings, "folder_template")
+    -- One folder level; Windows drops trailing dots and spaces, and an empty name means the default.
+    local function media_folder(key, default)
+        local name = string.gsub(obs.obs_data_get_string(settings, key), '[%c<>:"/\\|?*]', "")
+        name = string.gsub(string.gsub(name, "^%s+", ""), "[%s%.]+$", "")
+        return name ~= "" and name or default
+    end
+    CONFIG.media_folder_names = {
+        [MEDIA.REPLAY] = media_folder("replays_folder_name", MEDIA.REPLAY),
+        [MEDIA.RECORDING] = media_folder("recordings_folder_name", MEDIA.RECORDING),
+        [MEDIA.SCREENSHOT] = media_folder("screenshots_folder_name", MEDIA.SCREENSHOT),
+    }
     CONFIG.fallback_folder = obs.obs_data_get_string(settings, "fallback_folder")
     CONFIG.duplicate_cooldown = obs.obs_data_get_double(settings, "duplicate_cooldown")
     CONFIG.delete_spam_files = obs.obs_data_get_bool(settings, "delete_spam_files")
@@ -6781,7 +6795,13 @@ function script_properties()
     local template_group = obs.obs_properties_create()
     obs.obs_properties_add_text(template_group, "folder_template", "🧩  Folder template", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_text(template_group, "folder_template_help",
-        "Tokens: {game} {type} {year} {month} {day} {date} {yearmonth} {hour} {min}. {type} is Replays, Recordings or Screenshots. ONLY / creates a subfolder: {game}/{type} gives two folders, {game}-{type} gives one folder called \"Elden Ring-Replays\". See README.",
+        "Tokens: {game} {type} {year} {month} {day} {date} {yearmonth} {hour} {min}. {type} uses the folder names below. ONLY / creates a subfolder: {game}/{type} gives two folders, {game}-{type} gives one folder called \"Elden Ring-Replays\". See README.",
+        obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(template_group, "replays_folder_name", "🎞️  Replays folder name", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(template_group, "recordings_folder_name", "🎬  Recordings folder name", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(template_group, "screenshots_folder_name", "📸  Screenshots folder name", obs.OBS_TEXT_DEFAULT)
+    obs.obs_properties_add_text(template_group, "media_folder_names_help",
+        "Give replays and recordings the same name, e.g. Videos, to keep them in one folder.",
         obs.OBS_TEXT_INFO)
     -- Show the legacy controls only while the old flag is set. script_load migrates
     -- automatically now, so this is a fallback for the case where that did not run.
@@ -6936,6 +6956,9 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "group_split_recordings", false)
     obs.obs_data_set_default_bool(settings, "use_date_subfolders", false)
     obs.obs_data_set_default_string(settings, "folder_template", "{game}")
+    obs.obs_data_set_default_string(settings, "replays_folder_name", "Replays")
+    obs.obs_data_set_default_string(settings, "recordings_folder_name", "Recordings")
+    obs.obs_data_set_default_string(settings, "screenshots_folder_name", "Screenshots")
     obs.obs_data_set_default_string(settings, "fallback_folder", "Desktop")
     obs.obs_data_set_default_double(settings, "duplicate_cooldown", 5.0)
     obs.obs_data_set_default_bool(settings, "delete_spam_files", true)
