@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.20.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.21.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -43,7 +43,7 @@
 ### 🎯 Intelligent Game Detection
 
 - **Cross-Platform Detection** — Uses Windows API (Win32 FFI) or `xprop` on Linux to detect the active game
-- **1900+ Built-in Games** — Massive embedded database, no external files needed
+- **1800+ Built-in Games** — Massive embedded database, no external files needed
 - **Auto-Pattern Matching** — `minecraft_1.20.exe` → Saves to `Minecraft`
 - **Anti-Cheat Compatible** — Window title fallback for protected games (Valorant, Fortnite, Sea of Thieves)
 - **🌍 Any-Language Names** — Correct folders for Chinese, Japanese, Korean & Cyrillic game names via native Unicode (UTF-16) detection
@@ -60,12 +60,16 @@
 - **📏 Scaling** — 100–300% for 4K/HiDPI monitors
 - **📍 Positioning** — Choose any corner: Top Right, Top Left, Bottom Right, Bottom Left
 - **Click-through** — Popup doesn't block your game
+- **📡 Status Popups** — Optional: a short popup when the replay buffer or a recording starts or stops
 
 ### 📁 Organization
 
 - **Replay Buffer** — Automatically organized
 - **Regular Recordings** — Start/Stop recording support
 - **Screenshots** — Optional organization
+- **↔️ File Name Format** — Game name before or after the OBS name, with any separator (` - `, `_`, a space or none)
+- **🗂️ Your Own Folder Names** — Rename the Replays, Recordings and Screenshots folders, or put replays and recordings in one
+- **🪟 Folders for Apps** — Optional: clips from Discord, a browser or any other app go to a folder named after it
 - **File Splitting** — Handles long recording segments correctly
 - **🖼️ FFmpeg Thumbnails** — Optional cover art embedding for your clips (Windows & Linux)
 - **🔌 Replay Buffer Pro Compatible** — Waits for the trim-after-save plugin to finish, then organizes the final trimmed clip
@@ -75,9 +79,12 @@
 - **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
 - **Case-Insensitive** — Won't create duplicate folders with different cases
 - **🧩 Folder Templates** — Organize into any structure with `{game}`, `{type}`, `{yearmonth}`, `{date}` and more tokens
-- **230+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
+- **340+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
 - **⚡ Smart Save Hotkey** — Instant "Saving..." notification when pressing your custom hotkey
 - **📑 Chapter Marker Hotkey** — Places a chapter marker in your recording and confirms it with a notification
+- **📂 Open Last Replay Hotkey** — Opens the folder of your latest clip with the file selected
+- **📂 Open Last File Hotkey** — The same for your latest replay, recording or screenshot, whichever came last
+- **🕘 Recently Detected** — Programs the script didn't recognize are listed in Custom Names, so a rule is one pick away
 - **📂 No-Folder Mode** — Map a process to `/`, `\`, or `.` to keep files in OBS output root
 - **📦 Import/Export** — Share your custom name mappings with one click
 - **🔄 Auto-Update Check** — Notifies you when a new version is available (Windows & Linux)
@@ -148,12 +155,13 @@
   ┌─────────────────────────────────────────────────────────────────┐
   │  Priority 1: Custom Names (your rules — ALWAYS highest)        │
   │  Priority 2: Active process name (Win32 / xprop)               │
-  │  Priority 3: Built-in game database (1900+ games)              │
+  │  Priority 3: Built-in game database (1800+ games)              │
   │  Priority 4: Pattern matching (auto-clean process names)       │
   │  Priority 5: Window title fallback (anti-cheat bypass)         │
   │  Priority 6: OBS capture source names                          │
   │  Priority 7: Background game scan (optional, Windows only)     │
-  │  Priority 8: Fallback folder (default: "Desktop")              │
+  │  Priority 8: App name for non-game apps (optional)             │
+  │  Priority 9: Fallback folder (default: "Desktop")              │
   └─────────────────────────────────────────────────────────────────┘
   ```
 
@@ -169,13 +177,19 @@
 
   | Setting | Description |
   |---------|-------------|
-  | Add game prefix | Adds game name to filename (e.g., `CS2 - Replay 2025-06-15.mp4`) |
+  | Add game name to filename | Adds the game name to the filename (e.g., `CS2 - Replay 2025-06-15.mp4`) |
+  | Game name position | **Before the file name** (default) or **After the file name**, in front of the extension (e.g., `Replay 2025-06-15 - CS2.mp4`) |
+  | Separator | Text between the game name and the file name: ` - ` by default, or `_`, a space, or nothing |
   | Fallback folder | Folder name when no game detected (default: `Desktop`) |
+
+  > 💡 Want names like `2026.10.28_00-00-00_CS2` that sort by date? The date comes from OBS itself: set **Settings → Advanced → Recording → Filename Formatting** to `%CCYY.%MM.%DD_%hh-%mm-%ss` and clear **Replay Buffer Filename Prefix**. Then choose **After the file name** with `_` as the separator.
 
 ### 🎮 Custom Names (Highest Priority)
 
   | Setting | Description |
   |---------|-------------|
+  | Recently detected | Programs that were in focus when you saved and that the script didn't recognize. Pick one to fill the Game field |
+  | Refresh list | Shows programs detected while the settings window was open |
   | Game field | Process name, `+keywords`, or `*pattern*` to match |
   | Folder field | Target folder name (or `.` / `/` for no subfolder) |
   | Add button | Saves the new mapping |
@@ -196,6 +210,8 @@
   | Auto-restart after save | Stops and restarts buffer after each save (prevents overlap) |
   | Auto-start on launch | Automatically starts Replay Buffer when OBS opens |
   | Smart Save Hotkey | Assign in OBS Settings → Hotkeys → "Smart Save Replay" for instant feedback |
+  | Open Last Replay Hotkey | Assign in OBS Settings → Hotkeys → "Smart Open Last Replay" to open the latest clip's folder with the file selected |
+  | Open Last File Hotkey | Assign "Smart Open Last File" the same way to open your latest replay, recording or screenshot |
 
 ### 🎬 Replay Buffer Pro
 
@@ -211,7 +227,7 @@
   | Token | Expands to |
   |-------|------------|
   | `{game}` | Detected game folder (e.g. `Counter-Strike 2`) |
-  | `{type}` | `Replays`, `Recordings` or `Screenshots` |
+  | `{type}` | `Replays`, `Recordings` or `Screenshots`, or the names you set below the template |
   | `{year}` `{month}` `{day}` | `2026` / `07` / `23` |
   | `{date}` | `2026-07-23` |
   | `{yearmonth}` | `2026-07` (the old monthly-subfolder format) |
@@ -234,6 +250,8 @@
 
   > 💡 `{type}` is what keeps replays, recordings and screenshots apart inside one game folder. With `{game}/{type}` a saved replay lands in `Counter-Strike 2/Replays`, a recording in `Counter-Strike 2/Recordings`, and a screenshot in `Counter-Strike 2/Screenshots`. Leave it out and nothing changes.
 
+  > 💡 The three folder names can be changed below the template. Give replays and recordings the same name, for example `Videos`, and they share one folder while screenshots keep their own: `Elden Ring/Videos` and `Elden Ring/Screenshots`. Folders that already exist are not renamed; new clips simply go to the new name.
+
   > 💡 Upgrading from the old **Monthly subfolders** checkbox? A one-time **Migrate** button appears here and folds it into your template as `{game}/{yearmonth}` — your existing layout is preserved.
 
 ### 🗂️ Organization
@@ -244,6 +262,8 @@
   | Organize recordings | Sort regular recordings (not just replays) |
   | Group split recordings | Put the parts of a split recording in their own session folder, numbered `Part 01`, `Part 02` |
   | Scan all processes | Detect background games when alt-tabbed (Windows only) |
+  | Use the app name instead of the fallback folder | Clips taken while Discord, a browser or another non-game app is in focus go to a folder named after that app. A game seen by OBS or the process scan still wins, and OBS, the desktop and overlays keep using the fallback folder |
+  | Use the window title for unknown games | A game that isn't in the database or your custom names gets a folder named after its window title instead of its `.exe` name (e.g. `My Game` instead of `MyGame-Win64-Shipping`). A title that changes creates a new folder |
 
 ### 🛡️ Spam Protection
 
@@ -262,6 +282,7 @@
   | Position | Choose popup corner: Top Right, Top Left, Bottom Right, Bottom Left (Windows) |
   | Notification sound | Default, Quiet, any `.wav` in the `sounds/` folder, or Random |
   | Single notification | Show only the "Saving..." popup, stay quiet after |
+  | Replay buffer and recording status | A short popup when the replay buffer turns on or off and when a recording starts or stops. The script's own buffer restarts stay silent |
   | Duration | How long popup stays visible (1–10 seconds) |
   | Test button | Preview notifications instantly from settings |
 
@@ -321,7 +342,9 @@
   discord > .
   ```
 
-  Map a process to `/`, `\`, or `.` to keep files in the OBS output root without creating a subfolder. The game prefix is still added if enabled.
+  Map a process to `/`, `\`, or `.` to keep files in the OBS output root without creating a subfolder. The game name is still added to the filename if enabled.
+
+  > 💡 Exact rules also work for programs on the ignore list, such as Discord or a browser, so `discord > Discord` gives Discord clips their own folder. Your rule wins over everything else, including a game that OBS is capturing in the background.
 
 ### Examples
 
@@ -373,6 +396,17 @@
   | Recording is paused | OBS doesn't place chapters while paused |
   | Needs Hybrid MP4 or Hybrid MOV | Chapters need one of these recording formats (Settings → Output → Recording Format) |
   | Needs OBS 30.2 or newer | Chapter markers were added to OBS in version 30.2 |
+
+### 📂 Open Last Replay
+
+  Bind **Smart Open Last Replay (Show in Folder)** in OBS **Settings → Hotkeys**. One press opens the folder of your latest replay with the clip already selected.
+
+  **Smart Open Last File (Show in Folder)** does the same for whatever you saved last: a replay, a recording or a screenshot. Files the script doesn't organize are opened where OBS saved them.
+
+- **Windows** — opens File Explorer with the file selected, for paths in any language
+- **🐧 Linux** — asks your file manager to select the file (Dolphin, Nautilus, Nemo and others support this); otherwise the folder opens with `xdg-open`
+- A replay you just saved takes a moment to be written and moved into its folder. Pressing the key right after a Smart Save waits for it (up to 15 seconds) and then opens it
+- If the file was moved or deleted since, its folder opens instead. Before your first save of the session, a popup says there is nothing to open yet
 
 ### 🔊 Custom Notification Sound
 
@@ -491,6 +525,8 @@
 
   The `*pattern*` mode matches the window title, which works even when anti-cheat blocks process detection!
 
+  > 💡 The **Recently detected** list in Custom Names shows the process names the script saw but couldn't place, so you don't have to look them up in Task Manager.
+
   ---
 
 ### 🖼️ Thumbnails not appearing on MP4 files?
@@ -564,6 +600,24 @@
   ---
 
 ## 📋 Changelog
+
+### v2.21.0 — 🏷️ Flexible Naming & Quick Access
+
+- **↔️ Game name position and separator.** The game name was always put in front with a fixed ` - `. It can now go before or after the OBS file name, with any separator: ` - `, `_`, a space or nothing. Together with OBS's own *Filename Formatting* this gives names like `2026.10.28_00-00-00_CS2` that sort by date. The **Add game name prefix to filename** checkbox is now called **Add game name to filename**, since the name can also go at the end; your setting stays as it was. See [File Naming](#-file-naming). ([Issue #41](https://github.com/SlonickLab/Smart-Replay-Mover/issues/41), thanks @Basement-Kid; [Discussion #39](https://github.com/SlonickLab/Smart-Replay-Mover/discussions/39), thanks @DgE-O)
+- **🗂️ Your own folder names for `{type}`.** Replays, Recordings and Screenshots can each be renamed. Give replays and recordings the same name, such as `Videos`, and they share one folder. ([Issue #40](https://github.com/SlonickLab/Smart-Replay-Mover/issues/40), thanks @NKrN2)
+- **🪟 Discord and other apps.** Custom names now work for programs on the ignore list, so rules like `discord > Discord`, or the `chrome > /` example from this README, finally do what they say. A new option also names the folder after any non-game app instead of using the fallback folder. A game seen by OBS still wins, and OBS, the desktop and overlays keep using the fallback. ([Issue #41](https://github.com/SlonickLab/Smart-Replay-Mover/issues/41))
+- **🏷️ Window title for unknown games.** A new option names games missing from the database after their window title, so `My Game` instead of `MyGame-Win64-Shipping`. ([Discussion #39](https://github.com/SlonickLab/Smart-Replay-Mover/discussions/39))
+- **🕘 Recently detected.** Programs the script couldn't name itself now appear in a list under Custom Names. Pick one and the Game field is filled in for you. The list survives restarts and Reload Scripts, **🔄 Refresh list** shows programs detected while the settings were open, and a program disappears from it once a rule covers it. ([Discussion #39](https://github.com/SlonickLab/Smart-Replay-Mover/discussions/39))
+- **📂 Open Last Replay and Open Last File hotkeys.** One opens the folder of your latest replay with the file selected, the other does the same for your latest replay, recording or screenshot, whichever you saved last. A replay that is still being moved is waited for. See [Open Last Replay](#-open-last-replay). ([Issue #40](https://github.com/SlonickLab/Smart-Replay-Mover/issues/40))
+- **📡 Status popups.** An optional short popup when the replay buffer turns on or off and when a recording starts or stops. ([Issue #40](https://github.com/SlonickLab/Smart-Replay-Mover/issues/40))
+- **🔊 Sound fixes.** On Windows, the notification sound stayed silent when the script folder's path had non-Latin letters, such as a Cyrillic user name, and when the chosen sound file was missing. Your sound now plays, and a missing file falls back to the Windows system sound.
+- **🛡️ Games running as administrator.** Their process name couldn't be read, so the script guessed the game from the window title. It now reads the name the same way Task Manager does. New clips of such a game can land in a different folder than before; earlier clips stay where they are.
+- **🎯 Steadier guesses from the window title.** When the process name can't be read, the script looks for a known game inside the window title. Short names in the database, like `tr`, matched almost any title, and when several matched, a random one won, so the same game could land in a different folder after each OBS start. Names shorter than 4 letters are no longer used there, and the longest match wins.
+- **📁 Seven game names with a slash.** *Split/Second*, *Rising Storm/Red Orchestra 2*, *Resident Evil 4*, *5* and *7*, *OKAMI HD* and *Command: Modern Air/Naval Operations* created two nested folders, because a slash starts a new folder. They now use ` - `, so new clips of these games go to a single folder such as `Split - Second`.
+- **🧹 Six broken database entries removed.** Entries such as `000: space marine` → *Warhammer 40* were leftovers from cutting *Warhammer 40,000* titles at the comma, and no game uses those names.
+- **🔔 First popup after Reload Scripts.** After **Reload Scripts**, the first popup was lost and the Script Log said "Failed to register notification class": the old popup window was still alive and could only be removed from the thread that created it. It is now cleaned up there, so the first popup shows.
+- **🖥️ The desktop on Linux and Windows 11 search.** The desktop itself on KDE, Xfce, Cinnamon and GNOME, and the Start menu search on Windows 11, got folders of their own, such as `plasmashell`. They now count as the desktop and use the fallback folder, like Explorer on Windows.
+- **📝 Clearer Script Log.** The log now names the detected program for replays and screenshots too, not only for recordings.
 
 ### v2.20.0 — 📑 Chapter Markers & Safer Moves
 

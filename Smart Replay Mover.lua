@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.20.0
+-- Smart Replay Mover v2.21.0
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.20.0"
+local VERSION = "2.21.0"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,54 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.21.0:
+--   - NEW: Game name position and separator. The game name can go before or after the
+--         OBS file name, with any separator: " - " by default, "_", a space or none. With
+--         OBS's own Filename Formatting this gives names like "2026.10.28_00-00-00_GAME"
+--         (Issue #41, thanks @Basement-Kid; Discussion #39, thanks @DgE-O)
+--   - CHANGE: "Add game name prefix to filename" is now "Add game name to filename", since
+--         the name can also go at the end. The setting itself is unchanged
+--   - NEW: Folder names for {type}. Replays, Recordings and Screenshots can each be
+--         renamed, and giving replays and recordings the same name keeps them in one
+--         folder (Issue #40, thanks @NKrN2)
+--   - NEW: Custom names now work for programs on the ignore list, so rules such as
+--         "discord > Discord" or "chrome > /" finally apply. A new option names the folder
+--         after a non-game app instead of using the fallback folder; OBS, the Windows
+--         shell and overlays still go to the fallback (Issue #41)
+--   - NEW: Option to name unknown games after their window title instead of the .exe
+--         name (Discussion #39)
+--   - NEW: "Recently detected" list in Custom Names. Programs the script could not name
+--         itself are listed there, and picking one fills the Game field. The list is kept
+--         through Reload Scripts, and "Refresh list" updates it while the settings are open
+--         (Discussion #39)
+--   - NEW: "Smart Open Last Replay" hotkey opens the folder of the latest replay with the
+--         file selected, and "Smart Open Last File" does the same for the latest replay,
+--         recording or screenshot. A replay that is still being moved is waited for
+--         (Issue #40)
+--   - NEW: Optional popups when the replay buffer or a recording starts or stops
+--         (Issue #40)
+--   - FIX: The notification sound was silent when the script folder's path had non-Latin
+--         characters, and when the chosen sound file was missing. A missing file now
+--         plays the Windows system sound, as intended
+--   - FIX: A game running as administrator was not recognized by its process name, so
+--         the script fell back to guessing from the window title. New clips of such a game
+--         may land in a different folder than before; earlier clips stay where they are
+--   - FIX: The guess from the window title took whichever matching game came first, so
+--         the same game could land in a different folder after each OBS start. Game names
+--         shorter than 4 letters are no longer matched against titles, and the longest
+--         match wins
+--   - FIX: Seven game names containing "/" (Split/Second, Resident Evil 4, 5 and 7, and
+--         others) created two nested folders. They now use " - "
+--   - FIX: Removed six broken database entries such as "000: space marine", leftovers
+--         from cutting "Warhammer 40,000" titles at the comma
+--   - FIX: After Reload Scripts the first popup was lost ("Failed to register
+--         notification class"): the old popup window could only be removed from the
+--         thread that created it, and now it is
+--   - FIX: The desktop on Linux (KDE, Xfce, Cinnamon, GNOME) and the Start menu search on
+--         Windows 11 got folders of their own. They now count as the desktop and use the
+--         fallback folder
+--   - The Script Log names the detected program for replays and screenshots too
+
 -- CHANGELOG v2.20.0:
 --   - NEW: "Smart Add Chapter Marker" hotkey. It places a chapter marker and shows a
 --         notification, including why a marker was not added: not recording, paused, a
@@ -7623,7 +7671,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.20.0
+-- END OF SCRIPT v2.21.0
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
