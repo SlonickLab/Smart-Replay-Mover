@@ -378,6 +378,7 @@ local CONFIG = {
     -- Process scan detection
     scan_all_processes = false,
     app_name_folders = false,
+    title_for_unknown = false,
     -- Replay Buffer Pro compatibility
     rbp_mode = "auto",
     strip_trimmed_suffix = true,
@@ -4172,6 +4173,26 @@ local function clean_filename(str)
     return str
 end
 
+-- A window title as one folder name: invisible marks and control characters removed
+-- (some games hide zero-width characters in their titles), characters Windows rejects
+-- turned into spaces, at most 60 bytes. nil when nothing is left.
+local function clean_title_for_folder(title)
+    if not title or title == "" then return nil end
+    local s = title
+    s = s:gsub("\226\128[\139-\143]", "")   -- U+200B..U+200F zero-width and LRM/RLM
+    s = s:gsub("\226\128[\170-\174]", "")   -- U+202A..U+202E bidi embeddings
+    s = s:gsub("\226\129[\160-\164]", "")   -- U+2060..U+2064 word joiner and friends
+    s = s:gsub("\226\129[\166-\169]", "")   -- U+2066..U+2069 bidi isolates
+    s = s:gsub("\239\187\191", "")          -- U+FEFF
+    s = s:gsub("\194\173", "")              -- U+00AD soft hyphen
+    s = s:gsub('[%c<>:"/\\|?*]', " ")
+    s = s:gsub("%s+", " ")
+    s = utf8_truncate(s, 60)
+    s = s:gsub("^[%s%.]+", ""):gsub("[%s%.]+$", "")
+    if s == "" then return nil end
+    return s
+end
+
 local function clean_folder_path(str)
     if not str or str == "" then return "Unknown" end
     -- Allow / and \ for nested folders, but sanitize specific chars
@@ -4342,6 +4363,16 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback, sou
             if string.find(lower, pattern[1], 1, true) then
                 dbg("GAME_PATTERNS match: " .. lower .. " -> " .. pattern[2])
                 return pattern[2]
+            end
+        end
+
+        -- Unknown game: optionally its window title, which reads better than the .exe name.
+        -- Only for the focused process, whose title this is.
+        if source == "focused" and CONFIG.title_for_unknown then
+            local from_title = clean_title_for_folder(window_title)
+            if from_title then
+                dbg("Unknown game, using window title: " .. from_title)
+                return from_title
             end
         end
 
@@ -6605,6 +6636,7 @@ local function read_config(settings)
     CONFIG.auto_start_buffer = obs.obs_data_get_bool(settings, "auto_start_buffer")
     CONFIG.scan_all_processes = obs.obs_data_get_bool(settings, "scan_all_processes")
     CONFIG.app_name_folders = obs.obs_data_get_bool(settings, "app_name_folders")
+    CONFIG.title_for_unknown = obs.obs_data_get_bool(settings, "title_for_unknown")
     CONFIG.notification_position = obs.obs_data_get_string(settings, "notification_position")
     CONFIG.rbp_mode = obs.obs_data_get_string(settings, "rbp_mode")
     if CONFIG.rbp_mode == "" then CONFIG.rbp_mode = "auto" end
@@ -6876,6 +6908,8 @@ function script_properties()
     obs.obs_properties_add_text(folder_group, "scan_all_processes_help", "Detects background games when focused on Discord or Desktop (acts as a smart fallback).", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_bool(folder_group, "app_name_folders", "🪟  Use the app name instead of the fallback folder")
     obs.obs_properties_add_text(folder_group, "app_name_folders_help", "Clips taken while Discord, a browser or another non-game app is in focus go to a folder named after that app. OBS, the desktop and overlays still use the fallback folder.", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_bool(folder_group, "title_for_unknown", "🏷️  Use the window title for unknown games")
+    obs.obs_properties_add_text(folder_group, "title_for_unknown_help", "For games that are not in the database or your custom names. A title that changes creates a new folder.", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "folder_section", "🗂️  ORGANIZATION", obs.OBS_GROUP_NORMAL, folder_group)
 
     -- SPAM PROTECTION GROUP
@@ -7027,6 +7061,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "auto_start_buffer", false)
     obs.obs_data_set_default_bool(settings, "scan_all_processes", false)
     obs.obs_data_set_default_bool(settings, "app_name_folders", false)
+    obs.obs_data_set_default_bool(settings, "title_for_unknown", false)
     obs.obs_data_set_default_string(settings, "notification_position", "top_right")
     obs.obs_data_set_default_string(settings, "rbp_mode", "auto")
     obs.obs_data_set_default_bool(settings, "strip_trimmed_suffix", true)
