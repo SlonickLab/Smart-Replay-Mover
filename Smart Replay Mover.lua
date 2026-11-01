@@ -3045,6 +3045,9 @@ local STATE = {
     startup_update_status = "📦 v" .. VERSION,
     startup_update_check_done = false,
 
+    -- Programs in focus at save time that the script does not know, newest first (max 15)
+    recent_programs = {},
+
     -- Deferred replay move queue (v2.10.0 - Replay Buffer Pro compatibility)
     pending_moves = {},
     move_timer_running = false,
@@ -4730,6 +4733,43 @@ local function is_ignored_without_rule(name)
     return is_ignored(name) and not CUSTOM_NAMES_EXACT[string.lower(name)]
 end
 
+-- A focused program the script cannot name by itself: what the "Recently detected" list in
+-- Custom Names offers. A steam_app_<id> wrapper is left out, because its title is used instead.
+local function is_unnamed_program(name)
+    if not name or name == "" or is_core_ignored(name) or is_generic_steam_app_identifier(name) then return false end
+    local lower = string.lower(name)
+    if get_custom_name(name, nil) or GAME_NAMES[lower] or (GAME_DATABASE and GAME_DATABASE[lower]) then return false end
+    if not is_ignored(name) then
+        for _, pattern in ipairs(GAME_PATTERNS) do
+            if string.find(lower, pattern[1], 1, true) then return false end
+        end
+    end
+    return true
+end
+
+-- Written to the settings at once: Reload Scripts starts again from them without a script_save.
+-- A program that a rule now covers, even one matching only its window title, leaves the list.
+local function remember_program(name, title)
+    if not name or name == "" then return end
+    local lower = string.lower(name)
+    local list = STATE.recent_programs
+    local changed = false
+    for i = #list, 1, -1 do
+        if string.lower(list[i]) == lower then
+            table.remove(list, i)
+            changed = true
+        end
+    end
+    if is_unnamed_program(name) and not get_custom_name(name, title) then
+        table.insert(list, 1, name)
+        while #list > 15 do table.remove(list) end
+        changed = true
+    end
+    if changed and STATE.script_settings then
+        obs.obs_data_set_string(STATE.script_settings, "recent_programs", table.concat(list, "\n"))
+    end
+end
+
 -- Detect active game
 -- Returns: process_or_game_name, window_title, skip_window_fallback, source
 -- source is "focused" when the name is the focused process, "app" for a non-game app
@@ -4737,6 +4777,7 @@ end
 local function detect_game()
     if not WINDOWS_FFI_AVAILABLE then
         local linux_process, linux_title = get_active_linux_window_info()
+        remember_program(linux_process, linux_title)
         if linux_process and is_ignored_without_rule(linux_process) then
             if CONFIG.app_name_folders and not is_core_ignored(linux_process) then
                 -- As on Windows, a game that OBS is capturing wins over the app in focus.
@@ -4764,6 +4805,7 @@ local function detect_game()
     local title = get_window_title()
     local window_title_for_matching = title
     local active_ignored = false
+    remember_program(process, title)
 
     if process and is_ignored_without_rule(process) then
         active_ignored = true
@@ -6324,6 +6366,40 @@ end
 -- IMPORT/EXPORT FUNCTIONS
 -- ============================================================================
 
+-- "Recently detected" pick: copy the program into the Game field, then reset the list to
+-- its placeholder so the same program can be picked again.
+local function on_recent_program_picked(props, prop, settings)
+    local name = obs.obs_data_get_string(settings, "recent_program_pick")
+    if name == "" then return false end
+    obs.obs_data_set_string(settings, "new_process_name", name)
+    obs.obs_data_set_string(settings, "recent_program_pick", "")
+    return true
+end
+
+-- A callback returning true only re-renders the panel; OBS does not call script_properties
+-- again, so the items are rebuilt here.
+local function fill_recent_programs(p)
+    obs.obs_property_list_clear(p)
+    obs.obs_property_list_add_string(p, "Pick a program...", "")
+    for _, name in ipairs(STATE.recent_programs) do
+        if is_unnamed_program(name) then
+            obs.obs_property_list_add_string(p, name, name)
+        end
+    end
+end
+
+local function on_refresh_recent_clicked(props, p)
+    local list = obs.obs_properties_get(props, "recent_program_pick")
+    if not list then
+        -- obs_properties_get may not search inside groups on all versions
+        local grp = obs.obs_properties_get(props, "custom_section")
+        local content = grp and obs.obs_property_group_content(grp)
+        list = content and obs.obs_properties_get(content, "recent_program_pick")
+    end
+    if list then fill_recent_programs(list) end
+    return true
+end
+
 local function add_custom_mapping(props, p)
     if not STATE.script_settings then
         log("ERROR: Settings not loaded yet")
@@ -6368,6 +6444,7 @@ local function add_custom_mapping(props, p)
     load_custom_names(STATE.script_settings)
 
     log("Added custom mapping: " .. process .. " -> " .. folder)
+    on_refresh_recent_clicked(props)  -- the program just got a rule: drop it from the list
     return true
 end
 
@@ -6522,6 +6599,7 @@ local function on_import_clicked(props, p)
         log("No path specified, using default: " .. path)
     end
     import_custom_names(path, props)
+    on_refresh_recent_clicked(props)
     return true
 end
 
@@ -6837,6 +6915,11 @@ function script_properties()
     -- CUSTOM NAMES GROUP
     local custom_group = obs.obs_properties_create()
     obs.obs_properties_add_text(custom_group, "custom_names_help", "Custom names have HIGHEST priority! Format: game > Folder | +keywords > Folder | *text* > Folder | game > / or . (no folder)", obs.OBS_TEXT_INFO)
+    local p_recent = obs.obs_properties_add_list(custom_group, "recent_program_pick", "🕘  Recently detected", obs.OBS_COMBO_TYPE_LIST, obs.OBS_COMBO_FORMAT_STRING)
+    fill_recent_programs(p_recent)
+    obs.obs_property_set_modified_callback(p_recent, on_recent_program_picked)
+    obs.obs_properties_add_button(custom_group, "refresh_recent_btn", "🔄  Refresh list", on_refresh_recent_clicked)
+    obs.obs_properties_add_text(custom_group, "recent_program_help", "Programs that were in focus when you saved and that the script does not know. Picking one fills the Game field.", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_text(custom_group, "new_process_name", "🎯  Game (process, +keywords, or *text*)", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_text(custom_group, "new_folder_name", "📁  Folder name", obs.OBS_TEXT_DEFAULT)
     obs.obs_properties_add_button(custom_group, "add_mapping_btn", "➕  Add", add_custom_mapping)
@@ -7062,6 +7145,7 @@ function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "scan_all_processes", false)
     obs.obs_data_set_default_bool(settings, "app_name_folders", false)
     obs.obs_data_set_default_bool(settings, "title_for_unknown", false)
+    obs.obs_data_set_default_string(settings, "recent_program_pick", "")
     obs.obs_data_set_default_string(settings, "notification_position", "top_right")
     obs.obs_data_set_default_string(settings, "rbp_mode", "auto")
     obs.obs_data_set_default_bool(settings, "strip_trimmed_suffix", true)
@@ -7161,6 +7245,11 @@ function script_load(settings)
     evaluate_rbp_mode()
 
     load_custom_names(settings)
+
+    STATE.recent_programs = {}
+    for name in string.gmatch(obs.obs_data_get_string(settings, "recent_programs"), "[^\n]+") do
+        if #STATE.recent_programs < 15 then table.insert(STATE.recent_programs, name) end
+    end
 
     obs.obs_frontend_add_event_callback(on_event)
 
@@ -7269,6 +7358,7 @@ function script_save(settings)
         obs.obs_data_set_array(settings, "smart_add_chapter_hotkey", chapter_save_array)
         obs.obs_data_array_release(chapter_save_array)
     end
+    obs.obs_data_set_string(settings, "recent_programs", table.concat(STATE.recent_programs, "\n"))
 end
 
 function script_unload()
