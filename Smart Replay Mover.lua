@@ -3044,10 +3044,19 @@ local STATE = {
     -- Programs in focus at save time that the script does not know, newest first (max 15)
     recent_programs = {},
 
-    -- Open Last Replay hotkey: the hotkey thread only raises the flag
+    -- Open Last Replay / Open Last File hotkeys: the hotkey thread only raises the flags.
+    -- Saves are numbered as they happen, so "last" follows save order, not move order.
     last_replay_path = nil,
+    last_replay_seq = 0,
+    last_file_path = nil,
+    last_file_seq = 0,
+    save_seq = 0,
+    -- Smart Save pressed, OBS not done writing the clip yet (ms); OBS's own hotkey is not seen
+    replay_save_requested_until = 0,
     open_replay_hotkey_id = nil,
+    open_file_hotkey_id = nil,
     open_last_replay_pending = false,
+    open_last_file_pending = false,
 
     -- Until this time (ms) a "Replay Buffer On" popup is skipped: the script started it itself
     buffer_self_start_until = 0,
@@ -4107,18 +4116,39 @@ local function notify(title, message)
     table.insert(notification_queue, { title = title, message = message })
 end
 
--- Shows the latest replay in the file manager, selected. Called from the queue timer
--- below: the hotkey thread only raises STATE.open_last_replay_pending.
-local function open_last_replay()
-    local path = STATE.last_replay_path
+-- seq is the save's number from STATE.save_seq; a later save always wins, whichever file
+-- happens to be moved first.
+local function remember_saved_file(seq, path, is_replay)
+    if not path or path == "" then return end
+    if is_replay and seq >= STATE.last_replay_seq then
+        STATE.last_replay_seq, STATE.last_replay_path = seq, path
+    end
+    if seq >= STATE.last_file_seq then
+        STATE.last_file_seq, STATE.last_file_path = seq, path
+    end
+end
+
+-- True while a replay saved after save number seq still waits in the move queue, or while
+-- OBS is still writing a clip that Smart Save asked for.
+local function replay_still_moving(seq, now)
+    if now < STATE.replay_save_requested_until then return true end
+    for _, job in ipairs(STATE.pending_moves) do
+        if (job.seq or 0) > seq then return true end
+    end
+    return false
+end
+
+-- Shows a saved file in the file manager, selected. Called from the queue timer below: the
+-- hotkey threads only raise STATE.open_last_replay_pending / open_last_file_pending.
+local function open_in_folder(path, empty_title, empty_message, gone_title, gone_message)
     if not path or path == "" then
-        notify("No Replay Yet", "Save a clip first")
+        notify(empty_title, empty_message)
         return
     end
     local file_exists = obs.os_file_exists(path)
     local dir = string.match(path, "^(.*)[/\\]") or path
     if not file_exists and not obs.os_file_exists(dir) then
-        notify("Replay Not Found", "The file was moved or deleted")
+        notify(gone_title, gone_message)
         return
     end
 
@@ -4145,19 +4175,33 @@ local function open_last_replay()
                     .. quote_shell_arg("array:string:" .. uri) .. " string:'' || " .. cmd
             end
             run_shell_command("(" .. cmd .. ") >/dev/null 2>&1 &")
+        else
+            log("Opening the folder is not available in this OS mode")
         end
     end)
     if not ok then
-        log("ERROR opening the last replay: " .. tostring(err))
+        log("ERROR opening the file in its folder: " .. tostring(err))
     end
 end
 
 -- Runs on the graphics thread every 50ms via obs.timer_add in script_load.
 -- This is the SOLE consumer of notification_queue.
 local function process_notification_queue()
-    if STATE.open_last_replay_pending then
+    -- A replay still being saved or moved is waited for, then opened where it landed. The
+    -- pending flags hold a deadline: after it the newest known file is opened anyway.
+    -- (now_ms is declared further down, hence os_gettime_ns.)
+    local now = obs.os_gettime_ns() / 1000000
+    if STATE.open_last_replay_pending and (now >= STATE.open_last_replay_pending
+                                           or not replay_still_moving(STATE.last_replay_seq, now)) then
         STATE.open_last_replay_pending = false
-        open_last_replay()
+        open_in_folder(STATE.last_replay_path, "No Replay Yet", "Save a clip first",
+                       "Replay Not Found", "The file was moved or deleted")
+    end
+    if STATE.open_last_file_pending and (now >= STATE.open_last_file_pending
+                                         or not replay_still_moving(STATE.last_file_seq, now)) then
+        STATE.open_last_file_pending = false
+        open_in_folder(STATE.last_file_path, "No File Yet", "Save a clip or screenshot first",
+                       "File Not Found", "The file was moved or deleted")
     end
     if #notification_queue == 0 then return end
 
@@ -5826,7 +5870,7 @@ local function process_move_queue()
         local function try_flush(job, candidate)
             local moved, final_path = process_file_with_game(candidate, job.folder_name, job.raw_game, job.media_type)
             if moved then
-                STATE.last_replay_path = final_path or candidate
+                remember_saved_file(job.seq or 0, final_path or candidate, true)
                 STATE.last_flushed_path = job.path
                 STATE.last_flushed_time = os.time()
                 notify("Clip Saved", "Moved to: " .. job.folder_name)
@@ -5889,8 +5933,8 @@ local function process_move_queue()
 
                 if not done and now > job.deadline then
                     log("ERROR: Could not organize replay within 120s, leaving in place: " .. job.path)
-                    STATE.last_replay_path = (job.trimmed_path and obs.os_file_exists(job.trimmed_path))
-                                             and job.trimmed_path or job.path
+                    remember_saved_file(job.seq or 0, (job.trimmed_path and obs.os_file_exists(job.trimmed_path))
+                                        and job.trimmed_path or job.path, true)
                     notify("Move Failed", "File left in place")
                     STATE.files_skipped = STATE.files_skipped + 1
                     done = true  -- never delete, just stop tracking
@@ -5962,13 +6006,16 @@ local function on_recording_file_changed(calldata)
                     index = STATE.recording_split_index,
                     stamp = STATE.recording_session_stamp,
                 }
+                STATE.save_seq = STATE.save_seq + 1
+                local seq = STATE.save_seq
 
                 -- Delay move by 300ms to ensure OBS has fully released the file handle
                 local function move_split_segment()
                     obs.timer_remove(move_split_segment)
                     if obs.os_file_exists(file_to_move) then
                         log("Moving split segment " .. split.index .. ": " .. file_to_move)
-                        process_file_with_game(file_to_move, folder, game, MEDIA.RECORDING, split)
+                        local moved, final_path = process_file_with_game(file_to_move, folder, game, MEDIA.RECORDING, split)
+                        remember_saved_file(seq, moved and final_path or file_to_move)
                     else
                         dbg("Split segment file not found (may have been moved by polling): " .. file_to_move)
                     end
@@ -6051,10 +6098,13 @@ local function check_split_files()
                 if current_recording_file and obs.os_file_exists(current_recording_file) then
                     STATE.recording_split_index = (STATE.recording_split_index or 0) + 1
                     log("Split detected: moving previous segment " .. STATE.recording_split_index)
-                    process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, {
+                    STATE.save_seq = STATE.save_seq + 1
+                    local seq = STATE.save_seq
+                    local moved, final_path = process_file_with_game(current_recording_file, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, {
                         index = STATE.recording_split_index,
                         stamp = STATE.recording_session_stamp,
                     })
+                    remember_saved_file(seq, moved and final_path or current_recording_file)
                 end
                 current_recording_file = current_file
                 dbg("Now recording to: " .. current_file)
@@ -6206,6 +6256,7 @@ end
 local function on_event(event)
     local ok, err = pcall(function()
         if event == obs.OBS_FRONTEND_EVENT_REPLAY_BUFFER_SAVED then
+            STATE.replay_save_requested_until = 0
             local now = os.time()
             local diff = now - STATE.last_save_time
 
@@ -6263,7 +6314,9 @@ local function on_event(event)
                 -- Replay Buffer Pro (if present) can finish trimming first. Game is
                 -- detected HERE so the folder reflects the window at save time.
                 local t = now_ms()
+                STATE.save_seq = STATE.save_seq + 1
                 table.insert(STATE.pending_moves, {
+                    seq = STATE.save_seq,
                     path = path,
                     trimmed_path = STATE.rbp_active and make_trimmed_path(path) or nil,
                     folder_name = folder_name,
@@ -6308,6 +6361,8 @@ local function on_event(event)
             end
 
         elseif event == obs.OBS_FRONTEND_EVENT_SCREENSHOT_TAKEN then
+            STATE.save_seq = STATE.save_seq + 1
+            local seq = STATE.save_seq
             if CONFIG.organize_screenshots then
                 local now = now_ms() / 1000
                 local path = obs.obs_frontend_get_last_screenshot()
@@ -6331,7 +6386,8 @@ local function on_event(event)
                         STATE.last_detection_time = now
                     end
 
-                    local moved = process_file_with_game(path, folder_name, raw_game, MEDIA.SCREENSHOT)
+                    local moved, final_path = process_file_with_game(path, folder_name, raw_game, MEDIA.SCREENSHOT)
+                    remember_saved_file(seq, moved and final_path or path)
 
                     -- Throttle notifications (0.5s) to prevent UI overload
                     if now - STATE.last_screenshot_notify_time > 0.5 then
@@ -6345,6 +6401,8 @@ local function on_event(event)
 
                     STATE.last_screenshot_time = now
                 end
+            else
+                remember_saved_file(seq, obs.obs_frontend_get_last_screenshot())
             end
 
 
@@ -6394,6 +6452,8 @@ local function on_event(event)
             end
             
         elseif event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
+            STATE.save_seq = STATE.save_seq + 1
+            local seq = STATE.save_seq
             if CONFIG.organize_recordings then
                 obs.timer_remove(delayed_recording_init)
                 obs.timer_remove(check_split_files)
@@ -6427,12 +6487,13 @@ local function on_event(event)
 
                     if path then
                         log("Recording stopped - organizing file")
-                        local moved
+                        local moved, final_path
                         if STATE.recording_folder_name then
-                            moved = process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, split)
+                            moved, final_path = process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, split)
                         else
-                            moved = process_file(path, MEDIA.RECORDING, split)
+                            moved, final_path = process_file(path, MEDIA.RECORDING, split)
                         end
+                        remember_saved_file(seq, moved and final_path or path)
 
                         if moved then
                             notify("Recording Saved", "Moved to: " .. saved_folder)
@@ -6449,9 +6510,12 @@ local function on_event(event)
                 STATE.recording_session_stamp = nil
                 STATE.recording_split_index = 0
                 current_recording_file = nil
-            elseif CONFIG.status_notifications then
-                -- When recordings are organized, "Recording Saved" already says it stopped.
-                notify("Recording Stopped", "Recording finished")
+            else
+                remember_saved_file(seq, get_recording_path())
+                if CONFIG.status_notifications then
+                    -- When recordings are organized, "Recording Saved" already says it stopped.
+                    notify("Recording Stopped", "Recording finished")
+                end
             end
         end
     end)
@@ -7039,6 +7103,7 @@ function script_properties()
     obs.obs_properties_add_bool(buffer_group, "auto_start_buffer", "▶️  Auto-start Replay Buffer on OBS launch")
     obs.obs_properties_add_text(buffer_group, "smart_save_help", "💡 Smart Save: Go to OBS Settings → Hotkeys → find 'Smart Save Replay' and assign your key. Shows instant 'Saving...' feedback!", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_text(buffer_group, "open_last_replay_help", "📂 Open Last Replay: assign a key in OBS Settings → Hotkeys → 'Smart Open Last Replay'. Opens the folder with the clip selected.", obs.OBS_TEXT_INFO)
+    obs.obs_properties_add_text(buffer_group, "open_last_file_help", "📂 Open Last File: 'Smart Open Last File' in OBS Settings → Hotkeys opens your latest replay, recording or screenshot.", obs.OBS_TEXT_INFO)
     obs.obs_properties_add_group(props, "buffer_section", "🔄  BUFFER CONTROL", obs.OBS_GROUP_NORMAL, buffer_group)
 
     -- REPLAY BUFFER PRO GROUP (dynamic: RBP options hide when Mode = Off)
@@ -7294,6 +7359,7 @@ local function smart_save_replay(pressed)
         -- optimization in process_notification_queue skips it and shows "Clip Saved" directly.
         notify("Saving...", "Replay buffer saving...")
         dbg("Smart Save: queued instant notification, triggering save")
+        STATE.replay_save_requested_until = now_ms() + 15000
         obs.obs_frontend_replay_buffer_save()
     end)
 
@@ -7303,8 +7369,13 @@ local function smart_save_replay(pressed)
 end
 
 -- Hotkey thread: no Win32 or shell work here, the 50ms queue timer opens the folder.
+-- The value is the deadline (ms) for waiting on a replay that is still being saved or moved.
 local function smart_open_last_replay(pressed)
-    if pressed then STATE.open_last_replay_pending = true end
+    if pressed then STATE.open_last_replay_pending = now_ms() + 15000 end
+end
+
+local function smart_open_last_file(pressed)
+    if pressed then STATE.open_last_file_pending = now_ms() + 15000 end
 end
 
 -- OBS fires no event for its own "Add Chapter Marker" hotkey, so a script cannot react
@@ -7404,6 +7475,17 @@ function script_load(settings)
         obs.obs_data_array_release(open_save_array)
     end
 
+    STATE.open_file_hotkey_id = obs.obs_hotkey_register_frontend(
+        "smart_open_last_file",
+        "Smart Open Last File (Show in Folder)",
+        smart_open_last_file
+    )
+    local file_save_array = obs.obs_data_get_array(settings, "smart_open_last_file_hotkey")
+    if file_save_array then
+        obs.obs_hotkey_load(STATE.open_file_hotkey_id, file_save_array)
+        obs.obs_data_array_release(file_save_array)
+    end
+
     local exact_count = 0
     for _ in pairs(CUSTOM_NAMES_EXACT) do exact_count = exact_count + 1 end
     local custom_count = exact_count + #CUSTOM_NAMES_KEYWORDS + #CUSTOM_NAMES_CONTAINS
@@ -7482,6 +7564,11 @@ function script_save(settings)
         obs.obs_data_set_array(settings, "smart_open_last_replay_hotkey", open_save_array)
         obs.obs_data_array_release(open_save_array)
     end
+    if STATE.open_file_hotkey_id then
+        local file_save_array = obs.obs_hotkey_save(STATE.open_file_hotkey_id)
+        obs.obs_data_set_array(settings, "smart_open_last_file_hotkey", file_save_array)
+        obs.obs_data_array_release(file_save_array)
+    end
     obs.obs_data_set_string(settings, "recent_programs", table.concat(STATE.recent_programs, "\n"))
 end
 
@@ -7504,6 +7591,7 @@ function script_unload()
     STATE.move_timer_running = false
     STATE.notification_timer_should_stop = true
     STATE.open_last_replay_pending = false
+    STATE.open_last_file_pending = false
     notification_queue = {}                        -- Discard any pending notifications
 
     disconnect_recording_signals()
