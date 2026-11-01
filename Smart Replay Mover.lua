@@ -3279,6 +3279,11 @@ if IS_WINDOWS and ffi then
     WINDOWS_FFI_AVAILABLE = load_ok and user32 ~= nil
 end
 
+-- Kept out of the block above, so a failure here cannot switch off the rest of the FFI.
+if WINDOWS_FFI_AVAILABLE then
+    pcall(ffi.cdef, "BOOL PlaySoundW(LPCWSTR pszSound, HINSTANCE hmod, DWORD fdwSound);")
+end
+
 VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
 
 -- ============================================================================
@@ -4012,7 +4017,17 @@ local function play_notification_sound()
             local sound_file = resolve_notification_sound_file()
             
             local full_path = SCRIPT_DIR .. sound_file
-            local result = winmm.PlaySoundA(full_path, nil, WIN.SND_FILENAME + WIN.SND_ASYNC + WIN.SND_NODEFAULT)
+            local flags = WIN.SND_FILENAME + WIN.SND_ASYNC + WIN.SND_NODEFAULT
+            -- The path is UTF-8; PlaySoundA would read it in the ANSI code page, and with
+            -- SND_ASYNC it reports success even when that garbled path does not exist.
+            local wide = utf8_to_wide(full_path)
+            local result
+            if wide and pcall(function() return winmm.PlaySoundW end) then
+                STATE.sound_path_wide = wide  -- playback is asynchronous: keep the buffer alive
+                result = winmm.PlaySoundW(wide, nil, flags)
+            else
+                result = winmm.PlaySoundA(full_path, nil, flags)
+            end
             if result ~= 0 then
                 dbg("Playing custom sound: " .. sound_file)
                 return
