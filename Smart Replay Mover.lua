@@ -5826,6 +5826,15 @@ local function get_recording_path()
     return path
 end
 
+-- "Game: raw -> folder" in the Script Log, so a wrong folder can be traced to what was detected.
+local function log_detection(raw_game, folder_name)
+    if raw_game then
+        log("Game: " .. raw_game .. " -> " .. folder_name)
+    else
+        log("No game detected, using: " .. folder_name)
+    end
+end
+
 local function process_file(path, media_type, split_info)
     if not path or path == "" then
         log("ERROR: No file path provided")
@@ -5834,12 +5843,7 @@ local function process_file(path, media_type, split_info)
 
     local raw_game, window_title, skip_fallback, source = detect_game()
     local folder_name = get_game_folder(raw_game, window_title, skip_fallback, source)
-
-    if raw_game then
-        log("Game: " .. raw_game .. " -> " .. folder_name)
-    else
-        log("No game detected, using: " .. folder_name)
-    end
+    log_detection(raw_game, folder_name)
 
     return move_file(path, folder_name, folder_name, media_type, split_info)
 end
@@ -6313,6 +6317,7 @@ local function on_event(event)
             if path then
                 local raw_game, window_title, skip_fallback, source = detect_game()
                 local folder_name = get_game_folder(raw_game, window_title, skip_fallback, source)
+                log_detection(raw_game, folder_name)
 
                 -- Deferred move: queue the file instead of moving it right now, so
                 -- Replay Buffer Pro (if present) can finish trimming first. Game is
@@ -6383,6 +6388,7 @@ local function on_event(event)
                         local r, w, s, src = detect_game()
                         folder_name = get_game_folder(r, w, s, src)
                         raw_game = r
+                        log_detection(r, folder_name)
 
                         -- Update cache
                         STATE.cache_raw_game = r
