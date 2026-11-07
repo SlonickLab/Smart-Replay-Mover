@@ -3643,7 +3643,7 @@ local function hide_notification()
     STATE.notification_window_shown = false
 
     pcall(function()
-        if user32.IsWindow(hwnd) then
+        if user32.IsWindow(hwnd) ~= 0 then
             user32.ShowWindow(hwnd, WIN.SW_HIDE)
             -- NOTE: We no longer DestroyWindow here to allow reuse
         end
@@ -3757,7 +3757,7 @@ local function draw_notification_content()
     if STATE.notification_hwnd == nil then return end
 
     -- Enhanced safety: ensure we check if window still exists
-    if not user32.IsWindow(STATE.notification_hwnd) then
+    if user32.IsWindow(STATE.notification_hwnd) == 0 then
         STATE.notification_hwnd = nil
         return
     end
@@ -4018,10 +4018,11 @@ local function show_notification(title, message)
             return
         end
 
-        -- Check if window still exists and is valid
+        -- Check if window still exists and is valid. IsWindow returns a number, and 0 is
+        -- true in Lua; the window dies with its thread, which OBS replaces on a video reset.
         local needs_create = true
         if STATE.notification_hwnd ~= nil then
-            if user32.IsWindow(STATE.notification_hwnd) then
+            if user32.IsWindow(STATE.notification_hwnd) ~= 0 then
                 needs_create = false
             else
                 STATE.notification_hwnd = nil -- Invalid handle
