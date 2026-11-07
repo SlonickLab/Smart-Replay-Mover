@@ -2650,7 +2650,8 @@ local IGNORE_LIST = {
     -- ═══════════════════════════════════════════════════════════════
     "spotify", "vlc", "wmplayer", "groove", "itunes", "foobar2000",
     "musicbee", "winamp", "deezer", "tidal", "amazonmusic", "mpv",
-    "aimp", "qmmp", "potplayer", "mpc-hc", "mpc-be", "mediamonkey",
+    "aimp", "qmmp", "potplayer", "potplayermini64", "mpc-hc", "mpc-hc64",
+    "mpc-be", "mpc-be64", "mediamonkey",
 
     -- ═══════════════════════════════════════════════════════════════
     -- GAME LAUNCHERS - MAJOR (v2.7.0 Extended)
