@@ -4879,21 +4879,27 @@ local function get_background_game()
             return nil
         end
 
+        -- The user's rule wins wherever its program sits in the list, so a rule hit ends the
+        -- walk and a built-in match only holds the place until the list runs out.
+        local found = nil
         repeat
             local exe_file = ffi.string(pe32.szExeFile)
             local name = string.gsub(exe_file, "%.[eE][xX][eE]$", ""):lower()
             
-            if not is_ignored(name) and ((CUSTOM_NAMES_EXACT and CUSTOM_NAMES_EXACT[name])
-                or (GAME_NAMES and GAME_NAMES[name])
-                or (GAME_DATABASE and GAME_DATABASE[name])) then
-                dbg("Background game found via process snapshot: " .. name)
-                kernel32.CloseHandle(snapshot)
-                return name
+            if not is_ignored(name) then
+                if CUSTOM_NAMES_EXACT and CUSTOM_NAMES_EXACT[name] then
+                    found = name
+                    break
+                end
+                if not found and ((GAME_NAMES and GAME_NAMES[name]) or (GAME_DATABASE and GAME_DATABASE[name])) then
+                    found = name
+                end
             end
         until kernel32.Process32Next(snapshot, pe32) == 0
 
         kernel32.CloseHandle(snapshot)
-        return nil
+        if found then dbg("Background game found via process snapshot: " .. found) end
+        return found
     end)
     if not ok then dbg("get_background_game ERROR: " .. tostring(result)) end
     return ok and result or nil
