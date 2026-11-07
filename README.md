@@ -6,7 +6,7 @@
 
   **Automatically organize your Replay Buffer clips, Recordings, and Screenshots into game-specific folders.**
 
-  [![Version](https://img.shields.io/badge/version-2.21.0-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
+  [![Version](https://img.shields.io/badge/version-2.21.1-00d4aa.svg)](https://github.com/SlonickLab/Smart-Replay-Mover/releases)
   [![License](https://img.shields.io/badge/license-GPL%20v3-blue.svg)](LICENSE)
   [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-0078D6.svg)]()
   [![OBS](https://img.shields.io/badge/OBS-28.x+-302E31.svg)](https://obsproject.com/)
@@ -76,7 +76,7 @@
 
 ### 🛡️ Quality of Life
 
-- **Anti-Spam Protection** — Deletes duplicate files from panic-pressing hotkeys
+- **Anti-Spam Protection** — Deletes duplicate replays from panic-pressing hotkeys
 - **Case-Insensitive** — Won't create duplicate folders with different cases
 - **🧩 Folder Templates** — Organize into any structure with `{game}`, `{type}`, `{yearmonth}`, `{date}` and more tokens
 - **340+ Ignored Programs** — Won't confuse Discord, Chrome, launchers or utilities with games
@@ -261,7 +261,7 @@
   | Organize screenshots | Also sort screenshots |
   | Organize recordings | Sort regular recordings (not just replays) |
   | Group split recordings | Put the parts of a split recording in their own session folder, numbered `Part 01`, `Part 02` |
-  | Scan all processes | Detect background games when alt-tabbed (Windows only) |
+  | Scan all processes | Detect background games when alt-tabbed (Windows only). A running program with an exact custom name comes first, even if it isn't a game, unless it's on the ignore list. Otherwise the first known game in the process list is used. `*text*` and `+word` rules can't make the scan pick a program |
   | Use the app name instead of the fallback folder | Clips taken while Discord, a browser or another non-game app is in focus go to a folder named after that app. A game seen by OBS or the process scan still wins, and OBS, the desktop and overlays keep using the fallback folder |
   | Use the window title for unknown games | A game that isn't in the database or your custom names gets a folder named after its window title instead of its `.exe` name (e.g. `My Game` instead of `MyGame-Win64-Shipping`). A title that changes creates a new folder |
 
@@ -270,7 +270,7 @@
   | Setting | Description |
   |---------|-------------|
   | Cooldown | Seconds between saves (prevents duplicates) |
-  | Auto-delete | Automatically remove duplicate files |
+  | Auto-delete | Automatically remove duplicate replays. Recordings are never deleted |
 
 ### 🔔 Notifications
 
@@ -529,6 +529,14 @@
 
   ---
 
+### Clips saved after alt-tabbing go to "Desktop"?
+
+  When OBS, Discord or the desktop is in focus, the script asks OBS which program **Game Capture** is capturing (OBS 30 or newer). Any program it captures counts unless it's on the ignore list, so a fullscreen video player that isn't listed gets a folder of its own. **Window Capture** doesn't report a program this way.
+
+  **Solution for Window Capture:** turn on **Detect game by scanning all running processes** under Organization. The game has to be in the built-in list or in your Custom Names, for example `PBZ > Phantom Blade Zero`, with the `.exe` name on the left.
+
+  ---
+
 ### 🖼️ Thumbnails not appearing on MP4 files?
 
 - Thumbnails are embedded into **MP4 and MKV** only. MOV, FLV, TS, AVI and WebM are moved without one, because the cover-art stream does not survive those containers
@@ -600,6 +608,16 @@
   ---
 
 ## 📋 Changelog
+
+### v2.21.1 — 🎯 Smarter Alt-Tab Detection
+
+- **🎮 Game Capture after alt-tab.** With Game Capture set to *Capture any fullscreen application*, the OBS default, a clip saved while OBS, Discord or the desktop was in focus went to the fallback folder, even though OBS was still capturing the game. The script asked OBS for the captured game the wrong way. It now gets the answer, so these clips go to the game's folder (OBS 30 or newer). For these clips, custom names that match the window title, like `*Sea of Thieves*`, and **Use the window title for unknown games** also look at the game's own title. Title rules check the window you switched to first. While OBS is capturing, a window left in the Game Capture settings from an older *Capture specific window* setup no longer names the wrong game.
+- **🔍 Scan all running processes.** A running program with your exact custom rule now comes first. Before, the first program the script knew in the list of running programs won, so a Java program in the background (Java counts as Minecraft) could take clips meant for a game you wrote a rule for. Rules for programs with non-Latin names, such as Cyrillic or Japanese ones, work here too. Popular games the script knew only by part of their name, like Cyberpunk 2077, Baldur's Gate 3, Helldivers 2 and Palworld, are found as well, and their folders stay the same. ([Issue #42](https://github.com/SlonickLab/Smart-Replay-Mover/issues/42), thanks @ChuJoe)
+- **🎬 Recordings are never deleted.** A recording stopped within the save cooldown of the previous one (5 seconds by default) was treated as a duplicate and deleted without a popup. Every recording is now kept and organized. Spam protection still works for replays.
+- **🗂️ Generic program names.** Programs named `Game.exe` (games made with RPG Maker, for example), `nw.exe`, `main.exe` or `engine.exe` went to The Red Solstice, Montaro, BLOCKADE 3D or F.E.A.R. folders. They now keep their own names.
+- **🔔 Popups after changing video settings.** After a change of resolution or FPS in OBS, popups could stop showing until the script was reloaded. They keep showing now.
+- **🎞️ Video players.** The 64-bit versions of MPC-HC, MPC-BE and PotPlayer (`mpc-hc64.exe`, `mpc-be64.exe`, `PotPlayerMini64.exe`) got folders of their own, even while OBS was capturing a game. They're now on the ignore list.
+- **➕ New in the database:** Phantom Blade Zero.
 
 ### v2.21.0 — 🏷️ Flexible Naming & Quick Access
 

@@ -1,7 +1,7 @@
--- Smart Replay Mover v2.21.0
+-- Smart Replay Mover v2.21.1
 -- Simple, safe, and reliable replay buffer organizer for OBS
 -- ============================================================================
-local VERSION = "2.21.0"
+local VERSION = "2.21.1"
 local GITHUB_RAW_URL = "https://raw.githubusercontent.com/SlonickLab/Smart-Replay-Mover/main/Smart%20Replay%20Mover.lua"
 local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/releases"
 --
@@ -32,6 +32,33 @@ local GITHUB_RELEASES_URL = "https://github.com/SlonickLab/Smart-Replay-Mover/re
 -- Plagiarism or removal of this notice violates the license terms.
 --
 -- ============================================================================
+-- CHANGELOG v2.21.1:
+--   - FIX: Game Capture in "Capture any fullscreen application" mode lost the game while
+--         OBS, Discord or another ignored program had focus, so clips went to the fallback
+--         folder. The script asked get_hooked (OBS 30+) for a field OBS does not have; it
+--         now reads "executable". Title rules and the window title option also look at the
+--         hooked game's own title, after a title rule on the focused window. While the hook
+--         is live an old window setting no longer names the wrong game
+--         (found after Issue #42, thanks @ChuJoe)
+--   - FIX: "Scan all running processes" stopped at the first known program in the process
+--         list, so a Java program (Java counts as Minecraft) could beat a game with a custom
+--         rule. An exact rule now wins wherever its program sits in the list
+--   - FIX: The same scan missed rules for programs with non-Latin names, because it read
+--         process names in the system code page. It now reads them as Unicode
+--   - FIX: The same scan missed popular games that were not listed by their exact process
+--         name, such as Cyberpunk 2077, Baldur's Gate 3, Helldivers 2 and Palworld. Twenty
+--         names were added, with the folder names these games already had
+--   - FIX: A recording stopped within the save cooldown of the previous one was deleted as
+--         a duplicate without a popup. Recordings are now always kept and organized
+--   - FIX: Generic process names (game, main, engine, nw) sent other programs to the
+--         folders of The Red Solstice, BLOCKADE 3D, F.E.A.R. and Montaro, and window titles
+--         such as "Main Menu" too. The four entries are gone
+--   - FIX: After a video reset in OBS, popups could stop until the script was reloaded.
+--         The popup window dies with its thread, and the IsWindow check could not see it
+--   - FIX: The 64-bit MPC-HC, MPC-BE and PotPlayer got a folder of their own, even over a
+--         captured game. mpc-hc64, mpc-be64 and potplayermini64 are now on the ignore list
+--   - NEW: Phantom Blade Zero in the game database
+
 -- CHANGELOG v2.21.0:
 --   - NEW: Game name position and separator. The game name can go before or after the
 --         OBS file name, with any separator: " - " by default, "_", a space or none. With
@@ -7692,7 +7719,7 @@ function script_unload()
 end
 
 -- ============================================================================
--- END OF SCRIPT v2.21.0
+-- END OF SCRIPT v2.21.1
 -- Copyright (C) 2025-2026 SlonickLab - Licensed under GPL v3
 -- https://github.com/SlonickLab/Smart-Replay-Mover
 -- ============================================================================
