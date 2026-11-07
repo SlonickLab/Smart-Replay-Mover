@@ -648,6 +648,9 @@
 - **🖼️ No leftovers with non-English folder names.** On Windows, when a clip's path had letters outside English, such as a Cyrillic or accented user name, FFmpeg thumbnails left the original clip and a `.thumb.jpg` behind in the OBS folder, next to the finished copy in the game folder. Those files are now deleted properly.
 - **🐧 Screenshots after alt-tab on Linux.** The short screenshot cache counted CPU time instead of real time on Linux, so a screenshot taken right after switching games could land in the previous game's folder.
 
+<details>
+<summary>View older versions</summary>
+
 ### v2.16.0 — 🎞️ Grouped Split Recordings
 
 - **🎞️ Group split recordings into a session folder.** When OBS splits a long recording, the parts used to sit next to each other in the game folder, told apart only by their timestamps. A new **Group split recordings** option puts each recording's parts into their own folder named after the session start time, numbered `Part 01`, `Part 02`, and so on. It works with any folder template, and recordings that were never split are left exactly as before. The game name in the filename still follows your existing **Add game prefix** setting. ([Issue #36](https://github.com/SlonickLab/Smart-Replay-Mover/issues/36), thanks @emoeckel)
@@ -744,9 +747,6 @@
 - **🧵 Thread-Safe Notifications** — All notification calls now go through a safe queue processed exclusively on one thread, eliminating cross-thread Win32 GDI deadlocks
 - **⚡ Smart Skip** — On fast systems (NVMe/SSD), the intermediate "Saving..." is automatically skipped in favor of "Clip Saved" when save completes instantly
 - **🐛 Detection Fix** — Fixed double `detect_game()` call during replay buffer save that could cause wrong folder assignment
-
-<details>
-<summary>View older versions</summary>
 
 ### v2.8.0
 
