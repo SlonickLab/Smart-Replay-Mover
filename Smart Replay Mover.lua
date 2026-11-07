@@ -4482,7 +4482,7 @@ end
 -- GET GAME FOLDER (Main detection logic with priorities)
 -- ============================================================================
 
--- source is detect_game's 4th value: "focused", "app" or nil.
+-- source is detect_game's 4th value: "focused", "hooked", "app" or nil.
 local function get_game_folder(raw_name, window_title, skip_window_fallback, source)
     -- ═══════════════════════════════════════════════════════════════
     -- PRIORITY 1: Custom names (ABSOLUTE - user-defined ALWAYS wins!)
@@ -4532,8 +4532,8 @@ local function get_game_folder(raw_name, window_title, skip_window_fallback, sou
         end
 
         -- Unknown game: optionally its window title, which reads better than the .exe name.
-        -- Only for the focused process, whose title this is.
-        if source == "focused" and CONFIG.title_for_unknown then
+        -- Only when the title belongs to that process.
+        if (source == "focused" or source == "hooked") and CONFIG.title_for_unknown then
             local from_title = clean_title_for_folder(window_title)
             if from_title then
                 dbg("Unknown game, using window title: " .. from_title)
@@ -4795,11 +4795,12 @@ function is_portable_obs_source(source_id)
 end
 
 local function find_game_in_obs()
-    local ok, result, result_window = pcall(function()
+    local ok, result, result_window, result_title = pcall(function()
         local sources = obs.obs_enum_sources()
         if not sources then return nil end
         local found = nil
         local found_window = nil
+        local found_title = nil
         for _, source in ipairs(sources) do
             local id = obs.obs_source_get_id(source)
             local portable = not WINDOWS_FFI_AVAILABLE and is_portable_obs_source(id)
@@ -4814,7 +4815,32 @@ local function find_game_in_obs()
                     goto continue_source
                 end
 
-                local settings = obs.obs_source_get_settings(source)
+                -- Game Capture names the process it has hooked. That beats the window setting,
+                -- which can still name a game from an older "capture specific window" setup.
+                local hooked_exe, hooked_title = nil, nil
+                if id == "game_capture" then
+                    local proc_handler = obs.obs_source_get_proc_handler(source)
+                    local cd = proc_handler and obs.calldata_create()
+                    if cd then
+                        pcall(function()
+                            if obs.proc_handler_call(proc_handler, "get_hooked", cd) then
+                                -- OBS says "unknown" when it cannot read the process name.
+                                local exe = obs.calldata_string(cd, "executable")
+                                if exe and exe ~= "" and exe ~= "unknown" then hooked_exe = exe end
+                                hooked_title = obs.calldata_string(cd, "title")
+                            end
+                        end)
+                        obs.calldata_destroy(cd)
+                    end
+                    local name = hooked_exe and normalize_detected_process_name(hooked_exe)
+                    if name and not is_ignored(name) then
+                        found = name
+                        found_title = hooked_title
+                        dbg("Found game from hooked process: " .. found)
+                    end
+                end
+
+                local settings = not hooked_exe and obs.obs_source_get_settings(source)
                 if settings then
                     local window = obs.obs_data_get_string(settings, "window")
                     if not window or window == "" then window = obs.obs_data_get_string(settings, "title") end
@@ -4831,39 +4857,15 @@ local function find_game_in_obs()
                     obs.obs_data_release(settings)
                 end
 
-                -- FALLBACK: Try get_hooked proc handler (Windows game_capture only)
-                -- This queries the live hooked process, not stale settings
-                if not found and id == "game_capture" then
-                    local proc_handler = obs.obs_source_get_proc_handler(source)
-                    if proc_handler then
-                        local cd = obs.calldata_create()
-                        if cd then
-                            local call_ok = pcall(function()
-                                if obs.proc_handler_call(proc_handler, "get_hooked", cd) then
-                                    local hooked = obs.calldata_string(cd, "hooked_exe")
-                                    if hooked and hooked ~= "" then
-                                        local hooked_clean = string.gsub(hooked, "%.[eE][xX][eE]$", "")
-                                        if not is_ignored(hooked_clean) then
-                                            found = hooked_clean
-                                            dbg("Found game from hooked process: " .. found)
-                                        end
-                                    end
-                                end
-                            end)
-                            obs.calldata_destroy(cd)
-                        end
-                    end
-                end
-
                 if found then break end
             end
             ::continue_source::
         end
         obs.source_list_release(sources)
-        return found, found_window
+        return found, found_window, found_title
     end)
     if not ok then return nil, nil end
-    return result, result_window
+    return result, result_window, result_title
 end
 
 local function get_background_game()
@@ -4950,8 +4952,9 @@ end
 
 -- Detect active game
 -- Returns: process_or_game_name, window_title, skip_window_fallback, source
--- source is "focused" when the name is the focused process, "app" for a non-game app
--- named after itself, nil otherwise.
+-- source is "focused" when the name is the focused process, "hooked" for the game Game
+-- Capture has hooked (the title is then that game's own), "app" for a non-game app named
+-- after itself, nil otherwise.
 local function detect_game()
     if not WINDOWS_FFI_AVAILABLE then
         local linux_process, linux_title = get_active_linux_window_info()
@@ -5001,8 +5004,13 @@ local function detect_game()
         return process, window_title_for_matching, false, "focused"
     end
 
-    local obs_game = find_game_in_obs()
+    local obs_game, _, hooked_title = find_game_in_obs()
     if obs_game and not is_ignored(obs_game) then
+        -- The focused title stays when a title rule matches it. Otherwise title rules and the
+        -- title option need the game's own title, because the focused window is another program.
+        if hooked_title and not get_custom_name(nil, window_title_for_matching) then
+            return obs_game, hooked_title, false, "hooked"
+        end
         return obs_game, window_title_for_matching, false
     end
 
