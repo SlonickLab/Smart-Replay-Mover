@@ -3053,7 +3053,6 @@ local STATE = {
     cache_raw_game = nil,
     cache_folder_name = nil,
     last_detection_time = 0,
-    last_recording_time = 0,
     files_moved = 0,
     files_skipped = 0,
     script_settings = nil,
@@ -6533,48 +6532,35 @@ local function on_event(event)
                 obs.timer_remove(delayed_recording_init)
                 obs.timer_remove(check_split_files)
 
-                local now = os.time()
-                local diff = now - STATE.last_recording_time
-
+                -- No duplicate check here, unlike replays: every stopped recording is its own
+                -- file, however soon it follows the previous one, so none is ever deleted.
                 local path = get_recording_path()
+                local saved_folder = STATE.recording_folder_name or CONFIG.fallback_folder
 
-                if diff < CONFIG.duplicate_cooldown then
-                    log("Recording spam detected (" .. string.format("%.1f", diff) .. "s)")
-                    if CONFIG.delete_spam_files and path then
-                        delete_file(path)
-                        log("Duplicate recording deleted")
+                -- A zero counter means OBS never split this recording, so the final
+                -- file keeps its normal name and no session folder is created.
+                local split = nil
+                if (STATE.recording_split_index or 0) > 0 then
+                    split = {
+                        index = STATE.recording_split_index + 1,
+                        stamp = STATE.recording_session_stamp,
+                    }
+                end
+
+                if path then
+                    log("Recording stopped - organizing file")
+                    local moved, final_path
+                    if STATE.recording_folder_name then
+                        moved, final_path = process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, split)
+                    else
+                        moved, final_path = process_file(path, MEDIA.RECORDING, split)
                     end
-                    STATE.files_skipped = STATE.files_skipped + 1
-                else
-                    STATE.last_recording_time = now
+                    remember_saved_file(seq, moved and final_path or path)
 
-                    local saved_folder = STATE.recording_folder_name or CONFIG.fallback_folder
-
-                    -- A zero counter means OBS never split this recording, so the final
-                    -- file keeps its normal name and no session folder is created.
-                    local split = nil
-                    if (STATE.recording_split_index or 0) > 0 then
-                        split = {
-                            index = STATE.recording_split_index + 1,
-                            stamp = STATE.recording_session_stamp,
-                        }
-                    end
-
-                    if path then
-                        log("Recording stopped - organizing file")
-                        local moved, final_path
-                        if STATE.recording_folder_name then
-                            moved, final_path = process_file_with_game(path, STATE.recording_folder_name, STATE.recording_game_name, MEDIA.RECORDING, split)
-                        else
-                            moved, final_path = process_file(path, MEDIA.RECORDING, split)
-                        end
-                        remember_saved_file(seq, moved and final_path or path)
-
-                        if moved then
-                            notify("Recording Saved", "Moved to: " .. saved_folder)
-                        else
-                            notify("Recording Not Moved", "File left in place")
-                        end
+                    if moved then
+                        notify("Recording Saved", "Moved to: " .. saved_folder)
+                    else
+                        notify("Recording Not Moved", "File left in place")
                     end
                 end
 
