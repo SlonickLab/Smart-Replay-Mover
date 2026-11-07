@@ -4762,18 +4762,6 @@ end
 
 function get_obs_window_candidate(window_value)
     if not window_value or window_value == "" then return nil end
-
-    -- OBS window_capture selectors commonly look like "PBZ.exe: Window title".
-    -- Prefer the executable portion instead of the final colon-delimited title.
-    local lower = string.lower(window_value)
-    local exe_end = string.find(lower, ".exe", 1, true)
-    if exe_end then
-        local exe_path = string.sub(window_value, 1, exe_end + 3)
-        exe_path = string.gsub(exe_path, "^%s+", "")
-        exe_path = string.gsub(exe_path, "%s+$", "")
-        return normalize_detected_process_name(exe_path)
-    end
-
     local last_segment = nil
     for segment in string.gmatch(window_value, "[^:]+") do last_segment = segment end
     if not last_segment or last_segment == "" then last_segment = window_value end
@@ -4814,11 +4802,7 @@ local function find_game_in_obs()
         for _, source in ipairs(sources) do
             local id = obs.obs_source_get_id(source)
             local portable = not WINDOWS_FFI_AVAILABLE and is_portable_obs_source(id)
-            -- On Windows, include OBS Window Capture sources as well as Game Capture.
-            -- Window Capture is the user's actual source type in this setup.
-            local windows_capture = WINDOWS_FFI_AVAILABLE and id == "window_capture"
-            if id == "game_capture" or windows_capture or portable then
-                dbg("find_game_in_obs: checking source '" .. (obs.obs_source_get_name(source) or "?") .. "' (" .. tostring(id) .. ")")
+            if id == "game_capture" or portable then
                 -- LIVENESS CHECK: Only trust source settings if the source is actively
                 -- capturing something. When no game is hooked, width/height = 0.
                 -- This prevents returning stale data from previously captured games.
@@ -4839,7 +4823,6 @@ local function find_game_in_obs()
                         local exe = get_obs_process_candidate(window)
                         if exe and not is_ignored(exe) then
                             found = exe
-                            dbg("Found game from OBS " .. tostring(id) .. " source: " .. tostring(found))
                             obs.obs_data_release(settings)
                             break
                         end
