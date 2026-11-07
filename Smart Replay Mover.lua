@@ -3196,23 +3196,9 @@ if IS_WINDOWS and ffi then
             HANDLE CreateFileW(LPCWSTR lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, void* lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
             BOOL IsWindow(HWND hWnd);
 
-            // Toolhelp32 Snapshot
-            typedef struct tagPROCESSENTRY32 {
-                DWORD dwSize;
-                DWORD cntUsage;
-                DWORD th32ProcessID;
-                UINT_PTR th32DefaultHeapID;
-                DWORD th32ModuleID;
-                DWORD cntThreads;
-                DWORD th32ParentProcessID;
-                LONG  pcPriClassBase;
-                DWORD dwFlags;
-                char szExeFile[260];
-            } PROCESSENTRY32;
+            // Toolhelp32 Snapshot (Process32FirstW/NextW are declared on their own below)
 
             HANDLE CreateToolhelp32Snapshot(DWORD dwFlags, DWORD th32ProcessID);
-            BOOL Process32First(HANDLE hSnapshot, void* lppe);
-            BOOL Process32Next(HANDLE hSnapshot, void* lppe);
 
             typedef struct {
                 DWORD dwFileAttributes;
@@ -3377,6 +3363,22 @@ end
 if WINDOWS_FFI_AVAILABLE then
     pcall(ffi.cdef, "BOOL PlaySoundW(LPCWSTR pszSound, HINSTANCE hmod, DWORD fdwSound);")
     pcall(ffi.cdef, "HINSTANCE ShellExecuteW(HWND hwnd, LPCWSTR lpOperation, LPCWSTR lpFile, LPCWSTR lpParameters, LPCWSTR lpDirectory, int nShowCmd);")
+    pcall(ffi.cdef, [[
+        typedef struct tagPROCESSENTRY32W {
+            DWORD dwSize;
+            DWORD cntUsage;
+            DWORD th32ProcessID;
+            UINT_PTR th32DefaultHeapID;
+            DWORD th32ModuleID;
+            DWORD cntThreads;
+            DWORD th32ParentProcessID;
+            LONG  pcPriClassBase;
+            DWORD dwFlags;
+            unsigned short szExeFile[260];
+        } PROCESSENTRY32W;
+        BOOL Process32FirstW(HANDLE hSnapshot, void* lppe);
+        BOOL Process32NextW(HANDLE hSnapshot, void* lppe);
+    ]])
 end
 
 VISUAL_NOTIFICATIONS_SUPPORTED = WINDOWS_FFI_AVAILABLE
@@ -4874,10 +4876,10 @@ local function get_background_game()
         local snapshot = kernel32.CreateToolhelp32Snapshot(WIN.TH32CS_SNAPPROCESS, 0)
         if is_invalid_handle(snapshot) then return nil end
 
-        local pe32 = ffi.new("PROCESSENTRY32")
-        pe32.dwSize = ffi.sizeof("PROCESSENTRY32")
+        local pe32 = ffi.new("PROCESSENTRY32W")
+        pe32.dwSize = ffi.sizeof("PROCESSENTRY32W")
 
-        if kernel32.Process32First(snapshot, pe32) == 0 then
+        if kernel32.Process32FirstW(snapshot, pe32) == 0 then
             kernel32.CloseHandle(snapshot)
             return nil
         end
@@ -4886,7 +4888,7 @@ local function get_background_game()
         -- walk and a built-in match only holds the place until the list runs out.
         local found = nil
         repeat
-            local exe_file = ffi.string(pe32.szExeFile)
+            local exe_file = wide_to_utf8(pe32.szExeFile, wide_strlen(pe32.szExeFile, 260)) or ""
             local name = string.gsub(exe_file, "%.[eE][xX][eE]$", ""):lower()
             
             if not is_ignored(name) then
@@ -4898,7 +4900,7 @@ local function get_background_game()
                     found = name
                 end
             end
-        until kernel32.Process32Next(snapshot, pe32) == 0
+        until kernel32.Process32NextW(snapshot, pe32) == 0
 
         kernel32.CloseHandle(snapshot)
         if found then dbg("Background game found via process snapshot: " .. found) end
