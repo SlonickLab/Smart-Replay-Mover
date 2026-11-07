@@ -1586,6 +1586,7 @@ local GAME_DATABASE = {
     ["payday2_win32_release"] = "PAYDAY 2",
     ["payday_win32_release"] = "PAYDAY: The Heist",
     ["pbbg_win32"] = "Phantom Break: Baggle Grounds",
+    ["pbz"] = "Phantom Blade Zero",
     ["pcars"] = "Project Cars",
     ["pcars2avx"] = "Project CARS 2",
     ["pcars64"] = "Project CARS",
